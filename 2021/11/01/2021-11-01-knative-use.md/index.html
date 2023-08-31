@@ -1,0 +1,331 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Knative Use"><meta property="og:title" content="Knative Use"><meta property="twitter:title" content="Knative Use"><meta name=description content="本文档主要介绍跟随[官网入门教程](https://knative.dev/docs/getting-started/)和[minikube案例](https://github.com/csantanapr/knative-minikube)运行knative的hello world。中间部分命令根据国内众所周知的网络特点做了一下适配。本篇基本未涉及原理性介绍。"><meta property="og:description" content="本文档主要介绍跟随[官网入门教程](https://knative.dev/docs/getting-started/)和[minikube案例](https://github.com/csantanapr/knative-minikube)运行knative的hello world。中间部分命令根据国内众所周知的网络特点做了一下适配。本篇基本未涉及原理性介绍。"><meta property="twitter:description" content="本文档主要介绍跟随[官网入门教程](https://knative.dev/docs/getting-started/)和[minikube案例](https://github.com/csantanapr/knative-minikube)运行knative的hello world。中间部分命令根据国内众所周知的网络特点做了一下适配。本篇基本未涉及原理性介绍。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Knative Use | 张超的博客 | Taction Blog</title><link rel=canonical href=/2021/11/01/2021-11-01-knative-use.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/knative title=Knative>Knative</a></div><h1>Knative Use</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Monday, November 1, 2021</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>本文档主要介绍跟随<a href=https://knative.dev/docs/getting-started/>官网入门教程</a>和<a href=https://github.com/csantanapr/knative-minikube>minikube案例</a>运行knative的hello world。中间部分命令根据国内众所周知的网络特点做了一下适配。本篇基本未涉及原理性介绍。</p><p>首先确认安装<a href=https://kind.sigs.k8s.io/docs/user/quick-start>kind</a>或者<a href=https://minikube.sigs.k8s.io/docs/start/>minikube</a>、<a href=https://kubernetes.io/docs/tasks/tools/>kubectl</a>、<a href=https://knative.dev/docs/getting-started/#install-the-knative-cli>kn</a>这些必要的软件。如果你跟随本教程，那么你只需要确认安装minikube和kubectl即可。</p><h3 id=启动minikube>启动minikube</h3><blockquote><p>如果你希望你服务器的minikube能被本地的kubectl访问。那你可能需要更多的额外参数，比如：<code>minikube start --image-mirror-country='cn' --image-repository='registry.cn-hangzhou.aliyuncs.com/google_containers' --driver=none --listen-address=0.0.0.0 --apiserver-ips=服务器ip</code></p></blockquote><p>当minikube镜像拉取过慢的时候可以参考<a href=https://www.cxyzjd.com/article/TinyJian/109699420>配置代理</a>。或者通过以下命令来运行minikube<code>minikube start --image-mirror-country='cn' --image-repository='registry.cn-hangzhou.aliyuncs.com/google_containers'</code>但是这样是不够的。还是无法解决minikube拉取knative镜像问题。你会发现pod的状态被卡在<code>ImagePullBackOff</code>状态中。</p><p>作为一个成熟的程序员，命令行代理你肯定已经非常熟悉了。这里主要说明一下启动minikube设置的docker-env是配置在拉取镜像中通过此代理拉取。这里要注意第一要把本地代理client监听0.0.0.0，如果为了安全你可以通过网络安全组来限制只能自己的ip访问这个端口。第二将以下命令行中{your ip}替换成你主机的实际公网ip。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#6272a4># 命令行代理</span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>http_proxy</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#34;http://127.0.0.1:1080&#34;</span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>https_proxy</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#34;http://127.0.0.1:1080&#34;</span>
+</span></span><span style=display:flex><span><span style=color:#6272a4># 启动minikube</span>
+</span></span><span style=display:flex><span>minikube start <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>--image-mirror-country cn     <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>--image-repository<span style=color:#ff79c6>=</span>registry.cn-hangzhou.aliyuncs.com/google_containers     <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>--docker-env <span style=color:#8be9fd;font-style:italic>http_proxy</span><span style=color:#ff79c6>=</span>http://<span style=color:#ff79c6>{</span>your ip<span style=color:#ff79c6>}</span>:1080 <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>--docker-env <span style=color:#8be9fd;font-style:italic>https_proxy</span><span style=color:#ff79c6>=</span>http://<span style=color:#ff79c6>{</span>your ip<span style=color:#ff79c6>}</span>:1080 <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>--docker-env <span style=color:#8be9fd;font-style:italic>no_proxy</span><span style=color:#ff79c6>=</span>localhost,127.0.0.1,10.96.0.0/12,192.168.99.0/24,192.168.39.0/24
+</span></span></code></pre></div><h3 id=安装knative>安装knative</h3><p>选择要安装的版本</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>KNATIVE_VERSION</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#34;0.26.0&#34;</span>
+</span></span></code></pre></div><p>定义knative自己的各项CustomResourceDefinition（CRD）来扩展k8s API。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kubectl apply -f https://github.com/knative/serving/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_VERSION</span>/serving-crds.yaml
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Established --all crd
+</span></span></code></pre></div><p>创建knative-serving namespace并且安装各项knative组件。在这个yaml里定义了namespace、k8s权限及绑定、一些crd资源以及knative组件deployment。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kubectl apply -f https://github.com/knative/serving/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_VERSION</span>/serving-core.yaml
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> pod --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready -l <span style=color:#f1fa8c>&#39;!job-name&#39;</span> -n knative-serving &gt; /dev/null
+</span></span></code></pre></div><p>选择你要安装的Net Kourier版本</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>KNATIVE_NET_KOURIER_VERSION</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#34;0.26.0&#34;</span>
+</span></span></code></pre></div><p>在<code>kourier-system</code> namespace下安装kourier</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kubectl apply -f https://github.com/knative/net-kourier/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_NET_KOURIER_VERSION</span>/kourier.yaml
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> pod --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready -l <span style=color:#f1fa8c>&#39;!job-name&#39;</span> -n kourier-system
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> pod --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready -l <span style=color:#f1fa8c>&#39;!job-name&#39;</span> -n knative-serving
+</span></span></code></pre></div><p>你也可以通过以下命令来查看创建了哪些pod以及它们的状态<code>watch kubectl get pods -n knative-serving</code>。</p><pre tabindex=0><code>$ kubectl get pods -n knative-serving
+NAME                                     READY   STATUS    RESTARTS   AGE
+activator-7b9b84596d-245rh               1/1     Running   0          23m
+autoscaler-65cbff8f7d-bg4w7              1/1     Running   0          23m
+controller-7d8f4849d8-dnmsq              1/1     Running   0          23m
+domain-mapping-676785d476-jx6dd          1/1     Running   0          23m
+domainmapping-webhook-7949444d7d-z8plp   1/1     Running   0          23m
+webhook-58975ff8d-kqtrx                  1/1     Running   0          23m
+</code></pre><p>当所有的都处于running状态的时候，即启动完成，否则你可以根据对应的status判断是否出现了问题。</p><p>新开一个命令行终端运行以下命令。您需要这样做才能使用<code>EXTERNAL-IP</code>for kourier Load Balancer 服务。</p><pre tabindex=0><code>minikube tunnel
+</code></pre><p>将环境变量设置为<code>EXTERNAL_IP</code>工作节点的外部 IP 地址，您可能需要多次运行此命令，直到服务就绪。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>EXTERNAL_IP</span><span style=color:#ff79c6>=</span><span style=color:#ff79c6>$(</span>kubectl -n kourier-system get service kourier -o <span style=color:#8be9fd;font-style:italic>jsonpath</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#39;{.status.loadBalancer.ingress[0].ip}&#39;</span><span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>echo</span> <span style=color:#8be9fd;font-style:italic>EXTERNAL_IP</span><span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>$EXTERNAL_IP</span>
+</span></span></code></pre></div><p>使用以下命令将环境变量设置<code>KNATIVE_DOMAIN</code>为 DNS 域<code>nip.io</code>，并检查dns可以被正常解析。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>KNATIVE_DOMAIN</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#34;</span><span style=color:#8be9fd;font-style:italic>$EXTERNAL_IP</span><span style=color:#f1fa8c>.nip.io&#34;</span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>echo</span> <span style=color:#8be9fd;font-style:italic>KNATIVE_DOMAIN</span><span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>$KNATIVE_DOMAIN</span>
+</span></span><span style=display:flex><span>dig <span style=color:#8be9fd;font-style:italic>$KNATIVE_DOMAIN</span>
+</span></span></code></pre></div><p>为 Knative 服务配置 DNS</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kubectl patch configmap -n knative-serving config-domain -p <span style=color:#f1fa8c>&#34;{\&#34;data\&#34;: {\&#34;</span><span style=color:#8be9fd;font-style:italic>$KNATIVE_DOMAIN</span><span style=color:#f1fa8c>\&#34;: \&#34;\&#34;}}&#34;</span>
+</span></span></code></pre></div><p>配置knative使用kourier</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kubectl patch configmap/config-network <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  --namespace knative-serving <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  --type merge <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  --patch <span style=color:#f1fa8c>&#39;{&#34;data&#34;:{&#34;ingress.class&#34;:&#34;kourier.ingress.networking.knative.dev&#34;}}&#39;</span>
+</span></span></code></pre></div><p>接下来你就可以进行服务部署了。</p><h3 id=部署服务>部署服务</h3><pre tabindex=0><code>cat &lt;&lt;EOF | kubectl apply -f -
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: hello
+spec:
+  template:
+    spec:
+      containers:
+        - image: gcr.oneitfarm.com/knative-samples/helloworld-go
+          ports:
+            - containerPort: 8081
+          env:
+            - name: TARGET
+              value: &#34;Knative&#34;
+EOF
+</code></pre><p>等待服务部署完成</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> ksvc hello --all --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready
+</span></span></code></pre></div><p>获取服务的访问url</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>SERVICE_URL</span><span style=color:#ff79c6>=</span><span style=color:#ff79c6>$(</span>kubectl get ksvc hello -o <span style=color:#8be9fd;font-style:italic>jsonpath</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#39;{.status.url}&#39;</span><span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>echo</span> <span style=color:#8be9fd;font-style:italic>$SERVICE_URL</span>
+</span></span></code></pre></div><p>访问服务,这个时候控制台应该会输出<code>Hello Knative</code></p><pre tabindex=0><code>$ curl $SERVICE_URL
+</code></pre><p>我定义了一下输出内容，这样可以看到运行的时候的请求延迟。分别对服务进行冷启动请求和热请求测试。</p><pre tabindex=0><code>curl -w &#34;@curl-format.txt&#34; $SERVICE_URL
+</code></pre><p>运行结果</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#6272a4># 冷启动请求</span>
+</span></span><span style=display:flex><span>curl -w <span style=color:#f1fa8c>&#34;@curl-format.txt&#34;</span> <span style=color:#8be9fd;font-style:italic>$SERVICE_URL</span>
+</span></span><span style=display:flex><span>Hello Knative!
+</span></span><span style=display:flex><span>time_namelookup:  0.001831
+</span></span><span style=display:flex><span>       time_connect:  0.002052
+</span></span><span style=display:flex><span>    time_appconnect:  0.000000
+</span></span><span style=display:flex><span>      time_redirect:  0.000000
+</span></span><span style=display:flex><span>   time_pretransfer:  0.002110
+</span></span><span style=display:flex><span> time_starttransfer:  1.966370
+</span></span><span style=display:flex><span>                    ----------
+</span></span><span style=display:flex><span>         time_total:  1.966427
+</span></span><span style=display:flex><span>         
+</span></span><span style=display:flex><span><span style=color:#6272a4># 热启动请求</span>
+</span></span><span style=display:flex><span>curl -w <span style=color:#f1fa8c>&#34;@curl-format.txt&#34;</span> <span style=color:#8be9fd;font-style:italic>$SERVICE_URL</span>
+</span></span><span style=display:flex><span>Hello Knative!
+</span></span><span style=display:flex><span>time_namelookup:  0.194799
+</span></span><span style=display:flex><span>       time_connect:  0.195032
+</span></span><span style=display:flex><span>    time_appconnect:  0.000000
+</span></span><span style=display:flex><span>      time_redirect:  0.000000
+</span></span><span style=display:flex><span>   time_pretransfer:  0.195137
+</span></span><span style=display:flex><span> time_starttransfer:  0.196945
+</span></span><span style=display:flex><span>                    ----------
+</span></span><span style=display:flex><span>         time_total:  0.196989
+</span></span></code></pre></div><p>在这个过程中我们可以另外开一个命令行，通过watch pods来查看当有请求时容器被启动，当一段时间内没有请求后，容器数量被缩放到0这一现象。</p><p><img src=/images/knative-scale.png alt=image-20211101204945605></p><h4 id=部署新版本及分流>部署新版本及分流</h4><p>默认情况下knative会将所有流量都导入新版本，你可以增加<code>traffic</code>字段来指定不同版本的流量比例。</p><pre tabindex=0><code>cat &lt;&lt;EOF | kubectl apply -f -
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: hello
+spec:
+  template:
+    metadata:
+      name: hello-knative-v2
+    spec:
+      containers:
+        - image: gcr.oneitfarm.com/knative-samples/helloworld-go
+          ports:
+            - containerPort: 8080
+          env:
+            - name: TARGET
+              value: &#34;Knative V2&#34;
+  traffic:
+  - latestRevision: true
+    percent: 50
+  - revisionName: hello-00001
+    percent: 50
+EOF
+</code></pre><p>配置成功控制台会输出</p><pre tabindex=0><code>service.serving.knative.dev/hello configured
+</code></pre><p>这个时候我们再请求就会发现流量被路由到了不同的版本，你可以通过以下命令来查看不同的版本。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>kn revisions list
+</span></span><span style=display:flex><span><span style=color:#6272a4># or</span>
+</span></span><span style=display:flex><span>kubectl get revisions
+</span></span></code></pre></div><h4 id=服务缩放定义>服务缩放定义</h4><p>可以通过annotations中的定义来指定缩放策略。比如以下策略可以定义从1-5的pod缩放。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>cat <span style=color:#f1fa8c>&lt;&lt;EOF | kubectl apply -f -
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>apiVersion: serving.knative.dev/v1
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>kind: Service
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>metadata:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  name: hello
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>spec:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  template:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    metadata:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      name: hello-knative-v3
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      annotations:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        # the minimum number of pods to scale down to
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        autoscaling.knative.dev/minScale: &#34;1&#34;
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        # the maximum number of pods to scale up to
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        autoscaling.knative.dev/maxScale: &#34;5&#34;
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        # Target in-flight-requests per pod.
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        autoscaling.knative.dev/target: &#34;1&#34;
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    spec:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      containers:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>        - image: gcr.oneitfarm.com/knative-samples/helloworld-go
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>          ports:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>            - containerPort: 8080
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>          env:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>            - name: TARGET
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>              value: &#34;Knative V3&#34;
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>EOF</span>
+</span></span></code></pre></div><p>这时用hey压测就会得到以下结果</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>$ hey -z 30s -c <span style=color:#bd93f9>50</span> http://hello.default.10.104.46.103.nip.io
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Summary:
+</span></span><span style=display:flex><span>  Total:	30.0150 secs
+</span></span><span style=display:flex><span>  Slowest:	2.1715 secs
+</span></span><span style=display:flex><span>  Fastest:	0.0024 secs
+</span></span><span style=display:flex><span>  Average:	0.0353 secs
+</span></span><span style=display:flex><span>  Requests/sec:	1412.4594
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  Total data:	<span style=color:#bd93f9>763110</span> bytes
+</span></span><span style=display:flex><span>  Size/request:	<span style=color:#bd93f9>18</span> bytes
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Response <span style=color:#8be9fd;font-style:italic>time</span> histogram:
+</span></span><span style=display:flex><span>  0.002 <span style=color:#ff79c6>[</span>1<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  0.219 <span style=color:#ff79c6>[</span>42314<span style=color:#ff79c6>]</span>	|■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■■
+</span></span><span style=display:flex><span>  0.436 <span style=color:#ff79c6>[</span>30<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  0.653 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  0.870 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  1.087 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  1.304 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  1.521 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  1.738 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  1.955 <span style=color:#ff79c6>[</span>0<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>  2.171 <span style=color:#ff79c6>[</span>50<span style=color:#ff79c6>]</span>	|
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Latency distribution:
+</span></span><span style=display:flex><span>  10% in 0.0151 secs
+</span></span><span style=display:flex><span>  25% in 0.0204 secs
+</span></span><span style=display:flex><span>  50% in 0.0285 secs
+</span></span><span style=display:flex><span>  75% in 0.0399 secs
+</span></span><span style=display:flex><span>  90% in 0.0546 secs
+</span></span><span style=display:flex><span>  95% in 0.0671 secs
+</span></span><span style=display:flex><span>  99% in 0.1100 secs
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Details <span style=color:#ff79c6>(</span>average, fastest, slowest<span style=color:#ff79c6>)</span>:
+</span></span><span style=display:flex><span>  DNS+dialup:	0.0024 secs, 0.0024 secs, 2.1715 secs
+</span></span><span style=display:flex><span>  DNS-lookup:	0.0024 secs, 0.0000 secs, 2.0054 secs
+</span></span><span style=display:flex><span>  req write:	0.0000 secs, 0.0000 secs, 0.0108 secs
+</span></span><span style=display:flex><span>  resp wait:	0.0329 secs, 0.0023 secs, 0.2963 secs
+</span></span><span style=display:flex><span>  resp read:	0.0001 secs, 0.0000 secs, 0.0073 secs
+</span></span></code></pre></div><p>这个时候我们查看pod状态，就可以看到其中有一个预启动的比其他存活时间更久</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>$ k get pods
+</span></span><span style=display:flex><span>NAME                                          READY   STATUS    RESTARTS   AGE
+</span></span><span style=display:flex><span>hello-knative-v3-deployment-fdf969d79-b8zts   2/2     Running   <span style=color:#bd93f9>0</span>          81s
+</span></span><span style=display:flex><span>hello-knative-v3-deployment-fdf969d79-gr9t2   2/2     Running   <span style=color:#bd93f9>0</span>          3m17s
+</span></span><span style=display:flex><span>hello-knative-v3-deployment-fdf969d79-qhd2s   2/2     Running   <span style=color:#bd93f9>0</span>          81s
+</span></span><span style=display:flex><span>hello-knative-v3-deployment-fdf969d79-sfb8g   2/2     Running   <span style=color:#bd93f9>0</span>          81s
+</span></span><span style=display:flex><span>hello-knative-v3-deployment-fdf969d79-sz4hl   2/2     Running   <span style=color:#bd93f9>0</span>          81s
+</span></span></code></pre></div><p>注意：如果你设置<code>minScale > 0</code>将导致每个<code>Revision</code>Pod 始终至少运行指定数量的 Pod，尽管它们没有获得任何流量。在这种情况下，不要忘记清理旧版本。</p><h3 id=eventing>eventing</h3><h4 id=安装>安装</h4><p>选择eventing版本</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>KNATIVE_EVENTING_VERSION</span><span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#34;0.26.1&#34;</span>
+</span></span></code></pre></div><p>在<code>knative-eventing</code>namespace安装eventing组件和crd</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>kubectl apply --filename https://github.com/knative/eventing/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_EVENTING_VERSION</span>/eventing-crds.yaml
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Established --all crd
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl apply --filename https://github.com/knative/eventing/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_EVENTING_VERSION</span>/eventing-core.yaml
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> pod --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready -l <span style=color:#f1fa8c>&#39;!job-name&#39;</span> -n knative-eventing
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl apply --filename https://github.com/knative/eventing/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_EVENTING_VERSION</span>/in-memory-channel.yaml
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> pod --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready -l <span style=color:#f1fa8c>&#39;!job-name&#39;</span> -n knative-eventing
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl apply --filename https://github.com/knative/eventing/releases/download/v<span style=color:#8be9fd;font-style:italic>$KNATIVE_EVENTING_VERSION</span>/mt-channel-broker.yaml
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>kubectl <span style=color:#8be9fd;font-style:italic>wait</span> pod --timeout<span style=color:#ff79c6>=</span>-1s --for<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>condition</span><span style=color:#ff79c6>=</span>Ready -l <span style=color:#f1fa8c>&#39;!job-name&#39;</span> -n knative-eventing
+</span></span></code></pre></div><h4 id=部署eventing服务>部署eventing服务</h4><p>设置安装namespace</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>NAMESPACE</span><span style=color:#ff79c6>=</span>default
+</span></span></code></pre></div><pre tabindex=0><code>kubectl apply -f - &lt;&lt;EOF
+apiVersion: eventing.knative.dev/v1
+kind: broker
+metadata:
+  name: example-broker
+  namespace: $NAMESPACE
+EOF
+</code></pre><pre tabindex=0><code>kubectl -n $NAMESPACE get broker example-broker
+</code></pre><pre tabindex=0><code>NAME             URL                                                                               AGE   READY   REASON
+example-broker   http://broker-ingress.knative-eventing.svc.cluster.local/default/example-broker   47s   True
+</code></pre><pre tabindex=0><code>kubectl -n $NAMESPACE apply -f - &lt;&lt; EOF
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-display
+spec:
+  replicas: 1
+  selector:
+    matchLabels: &amp;labels
+      app: hello-display
+  template:
+    metadata:
+      labels: *labels
+    spec:
+      containers:
+        - name: event-display
+          image: gcr.oneitfarm.com/knative-releases/knative.dev/eventing-contrib/cmd/event_display
+
+---
+
+kind: Service
+apiVersion: v1
+metadata:
+  name: hello-display
+spec:
+  selector:
+    app: hello-display
+  ports:
+  - protocol: TCP
+    port: 80
+    targetPort: 8080
+EOF
+</code></pre><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>kubectl -n <span style=color:#8be9fd;font-style:italic>$NAMESPACE</span> apply -f - <span style=color:#f1fa8c>&lt;&lt; EOF
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>apiVersion: eventing.knative.dev/v1
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>kind: Trigger
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>metadata:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  name: hello-display
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>spec:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  broker: example-broker
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  filter:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    attributes:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      type: greeting
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  subscriber:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    ref:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      apiVersion: v1
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      kind: Service
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>      name: hello-display
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>EOF</span>
+</span></span></code></pre></div><pre tabindex=0><code>kubectl apply -f https://github.com/knative/serving/releases/download/v$KNATIVE_VERSION/serving-domainmapping-crds.yaml
+kubectl wait --for=condition=Established --all crd
+kubectl apply -f https://github.com/knative/serving/releases/download/v$KNATIVE_VERSION/serving-domainmapping.yaml
+</code></pre><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>kubectl apply -f - <span style=color:#f1fa8c>&lt;&lt;EOF
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>apiVersion: networking.internal.knative.dev/v1alpha1
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>kind: ClusterDomainClaim
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>metadata:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  name: broker-ingress.knative-eventing.$KNATIVE_DOMAIN
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>spec:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  namespace: knative-eventing
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>EOF</span>
+</span></span></code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>kubectl -n knative-eventing apply -f - <span style=color:#f1fa8c>&lt;&lt; EOF
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>apiVersion: serving.knative.dev/v1alpha1
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>kind: DomainMapping
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>metadata:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  name: broker-ingress.knative-eventing.$KNATIVE_DOMAIN
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>spec:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>  ref:
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    name: broker-ingress
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    kind: Service
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>    apiVersion: v1
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c>EOF</span>
+</span></span></code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>curl -s -v  <span style=color:#f1fa8c>&#34;http://broker-ingress.knative-eventing.</span><span style=color:#8be9fd;font-style:italic>$KNATIVE_DOMAIN</span><span style=color:#f1fa8c>/</span><span style=color:#8be9fd;font-style:italic>$NAMESPACE</span><span style=color:#f1fa8c>/example-broker&#34;</span> <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -X POST <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -H <span style=color:#f1fa8c>&#34;Ce-Id: say-hello&#34;</span> <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -H <span style=color:#f1fa8c>&#34;Ce-Specversion: 1.0&#34;</span> <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -H <span style=color:#f1fa8c>&#34;Ce-Type: greeting&#34;</span> <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -H <span style=color:#f1fa8c>&#34;Ce-Source: not-sendoff&#34;</span> <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -H <span style=color:#f1fa8c>&#34;Content-Type: application/json&#34;</span> <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>  -d <span style=color:#f1fa8c>&#39;{&#34;msg&#34;:&#34;Hello Knative!&#34;}&#39;</span>
+</span></span></code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>kubectl -n <span style=color:#8be9fd;font-style:italic>$NAMESPACE</span> logs -l <span style=color:#8be9fd;font-style:italic>app</span><span style=color:#ff79c6>=</span>hello-display --tail<span style=color:#ff79c6>=</span><span style=color:#bd93f9>100</span>
+</span></span></code></pre></div><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>Context Attributes,
+</span></span><span style=display:flex><span>  specversion: 1.0
+</span></span><span style=display:flex><span>  type: greeting
+</span></span><span style=display:flex><span>  source: not-sendoff
+</span></span><span style=display:flex><span>  id: say-hello
+</span></span><span style=display:flex><span>  datacontenttype: application/json
+</span></span><span style=display:flex><span>Extensions,
+</span></span><span style=display:flex><span>  knativearrivaltime: 2020-11-06T18:29:10.448647713Z
+</span></span><span style=display:flex><span>  knativehistory: default-kne-trigger-kn-channel.default.svc.cluster.local
+</span></span><span style=display:flex><span>Data,
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>{</span>
+</span></span><span style=display:flex><span>    <span style=color:#f1fa8c>&#34;msg&#34;</span>: <span style=color:#f1fa8c>&#34;Hello Knative!&#34;</span>
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>}</span>
+</span></span></code></pre></div><h3 id=后记>后记</h3><p>通过本篇文章，你可以在自己的minikube中运行knative并且观察其对于服务的实际缩放的现象。并且能够看到服务的冷热启动的请求延迟。</p><p>接下来计划陆续会进行远程调试k8s中的knative组件、对knative组件分析、knative与kong结合案例的分析、knative关键源码分析。</p><hr><ul class=pager><li class=previous><a href=/2021/10/26/2021-10-26-manage-wasm-using-docker.md/ data-toggle=tooltip data-placement=top title=使用Docker工具在WasmEdge中管理WebAssembly应用程序>&larr;
+Previous Post</a></li><li class=next><a href=/2021/11/04/2021-11-04-debug-knative.md/ data-toggle=tooltip data-placement=top title="Debug Knative">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

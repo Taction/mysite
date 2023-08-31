@@ -1,0 +1,355 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Dapr Http Wasm Middleware"><meta property="og:title" content="Dapr Http Wasm Middleware"><meta property="twitter:title" content="Dapr Http Wasm Middleware"><meta name=description content="本文从源码角度分析Dapr Http Wasm的实现原理，以及给出一些常见的使用场景案例。"><meta property="og:description" content="本文从源码角度分析Dapr Http Wasm的实现原理，以及给出一些常见的使用场景案例。"><meta property="twitter:description" content="本文从源码角度分析Dapr Http Wasm的实现原理，以及给出一些常见的使用场景案例。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Dapr Http Wasm Middleware | 张超的博客 | Taction Blog</title><link rel=canonical href=/2023/06/25/2023-06-25-http-wasm-middleware.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/dapr title=dapr>dapr</a></div><h1>Dapr Http Wasm Middleware</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Sunday, June 25, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>本文从源码角度分析Dapr Http Wasm的实现原理，以及给出一些常见的使用场景案例。</p><h3 id=dapr-runtime-middleware>Dapr runtime middleware</h3><p>dapr将会在初始化的时候调用一次<code>GetHandler</code>这个函数来获取http middleware的构造函数。这里是http middleware构造链式中间件调用的逻辑，与wasm无关，但是是这部分代码应用到middleware一个粘合和基础。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span>httpMiddlewareLoader.DefaultRegistry.<span style=color:#50fa7b>RegisterComponent</span>(<span style=color:#8be9fd;font-style:italic>func</span>(log logger.Logger) httpMiddlewareLoader.FactoryMethod {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(metadata middleware.Metadata) (httpMiddleware.Middleware, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> wasm.<span style=color:#50fa7b>NewMiddleware</span>(log).<span style=color:#50fa7b>GetHandler</span>(context.<span style=color:#50fa7b>TODO</span>(), metadata)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}, <span style=color:#f1fa8c>&#34;wasm&#34;</span>)
+</span></span></code></pre></div><p>GetHandler会返回一个http中间件函数的构造函数。这个函数的主要作用是解析wasm url，新建一个NewMiddleware。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// GetHandler返回的是http.Handler的一个构造函数。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>middleware) <span style=color:#50fa7b>GetHandler</span>(ctx context.Context, metadata dapr.Metadata) (<span style=color:#8be9fd;font-style:italic>func</span>(next http.Handler) http.Handler, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	rh, err <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>getHandler</span>(ctx, metadata)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> rh.requestHandler, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// getHandler 解析metadata配置
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>middleware) <span style=color:#50fa7b>getHandler</span>(ctx context.Context, metadata dapr.Metadata) (<span style=color:#ff79c6>*</span>requestHandler, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// Metadata解析目前主要是为了获取wasm bytes。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	meta, err <span style=color:#ff79c6>:=</span> wasm.<span style=color:#50fa7b>GetInitMetadata</span>(ctx, metadata.Base)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;wasm: failed to parse metadata: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 主要是为了获取wasm http Middleware实例，以及配置wasm的运行时
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#8be9fd;font-style:italic>var</span> stdout, stderr bytes.Buffer
+</span></span><span style=display:flex><span>	mw, err <span style=color:#ff79c6>:=</span> wasmnethttp.<span style=color:#50fa7b>NewMiddleware</span>(ctx, meta.Guest,
+</span></span><span style=display:flex><span>		handler.<span style=color:#50fa7b>Logger</span>(m),
+</span></span><span style=display:flex><span>		handler.<span style=color:#50fa7b>ModuleConfig</span>(wazero.<span style=color:#50fa7b>NewModuleConfig</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithName</span>(meta.GuestName).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithStdout</span>(<span style=color:#ff79c6>&amp;</span>stdout). <span style=color:#6272a4>// reset per request
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#50fa7b>WithStderr</span>(<span style=color:#ff79c6>&amp;</span>stderr). <span style=color:#6272a4>// reset per request
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#6272a4>// The below violate sand-boxing, but allow code to behave as expected.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#50fa7b>WithRandSource</span>(rand.Reader).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysNanosleep</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysWalltime</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysNanosleep</span>()))
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>requestHandler{mw: mw, logger: m.logger, stdout: <span style=color:#ff79c6>&amp;</span>stdout, stderr: <span style=color:#ff79c6>&amp;</span>stderr}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>GetHandler的返回值是requestHandler函数。可以看到通过传递给<code>requestHandler</code> <code>http.Handler</code>来构造链式的http路由中间件。也是在这个函数中实际包含wasm中间件的逻辑。通过调用<code>rh.mw.NewHandler</code>方法新建一个实例，调用其<code>ServeHTTP(w, r)</code>对请求进行处理。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rh <span style=color:#ff79c6>*</span>requestHandler) <span style=color:#50fa7b>requestHandler</span>(next http.Handler) http.Handler {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> http.<span style=color:#50fa7b>HandlerFunc</span>(<span style=color:#8be9fd;font-style:italic>func</span>(w http.ResponseWriter, r <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>		h <span style=color:#ff79c6>:=</span> rh.mw.<span style=color:#50fa7b>NewHandler</span>(r.<span style=color:#50fa7b>Context</span>(), next)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>			rh.stdout.<span style=color:#50fa7b>Reset</span>()
+</span></span><span style=display:flex><span>			rh.stderr.<span style=color:#50fa7b>Reset</span>()
+</span></span><span style=display:flex><span>		}()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		h.<span style=color:#50fa7b>ServeHTTP</span>(w, r)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> stdout <span style=color:#ff79c6>:=</span> rh.stdout.<span style=color:#50fa7b>String</span>(); <span style=color:#8be9fd;font-style:italic>len</span>(stdout) &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>			rh.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;wasm stdout: %s&#34;</span>, stdout)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> stderr <span style=color:#ff79c6>:=</span> rh.stderr.<span style=color:#50fa7b>String</span>(); <span style=color:#8be9fd;font-style:italic>len</span>(stderr) &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>			rh.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;wasm stderr: %s&#34;</span>, stderr)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h3 id=http-wasm-host-go>http-wasm-host-go</h3><p>实际的wasm host逻辑都在这个库中。在习惯上，会将运行wasm程序的运行时部分称为host，将wasm程序的sdk称为guest。总体思路上来说这个项目为了留出适配其他http框架（例如fasthttp），将逻辑进行了分层处理，与nethttp相关的逻辑比如说生成中间件，设置http上下文都在这个包下。而通用的逻辑处理，比如说实例化wasm程序，调用wasm程序函数，注册host function等都放在了<code>handler</code>包下。了解了这个在查看代码的时候就会对其代码的组织会有更好的了解。在关注具体逻辑之前，先来看一下其目录结构，以及包含的代码逻辑内容。</p><h4 id=目录结构>目录结构</h4><pre tabindex=0><code>├── api # interface和常量定义
+│   └── handler # 主要就是middleware 和host interface
+├── examples #例子
+├── handler # middleware的通用逻辑及实际执行
+│   ├── cstring.go
+│   ├── middleware.go # 通用的middleware逻辑定义，host function定义
+│   ├── nethttp # 针对不同的实际场景（net.http）适配，针对不同http框架的wrapper
+│   │   ├── benchmark_test.go
+│   │   ├── buffer.go
+│   │   ├── buffer_test.go
+│   │   ├── example_test.go
+│   │   ├── host.go # host function修改http信息的实际逻辑
+│   │   ├── host_test.go
+│   │   ├── middleware.go # 针对net http特定的逻辑，是包装在handler/middleware.go外面的适配层。
+│   │   ├── middleware_test.go
+│   │   └── tck_test.go
+│   ├── options.go
+│   └── state.go
+├── internal # 目前只包含测试
+│   └── test
+│       └── testdata
+│           ├── bench
+│           └── e2e
+├── tck # technology compatibility kit
+│   └── guest
+└── testing # 测试
+    └── handlertest
+</code></pre><p>nethttp wrapper主文件中逻辑其实很简单，外部会使用的逻辑主要集中在两个函数中,在新建handler的时候会将底层middleware的HandleRequest和HandleResponse赋值给自己。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>NewMiddleware</span>(ctx context.Context, guest []<span style=color:#8be9fd>byte</span>, options <span style=color:#ff79c6>...</span>handler.Option) (Middleware, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 初始化host function，验证wasmapp正确，然后返回一个base的middleware。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	m, err <span style=color:#ff79c6>:=</span> handler.<span style=color:#50fa7b>NewMiddleware</span>(ctx, guest, host{}, options<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>middleware{m: m}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// NewHandler implements the same method as documented on handler.Middleware.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// 这里的NewHandler函数就是上文中调用的库函数。这里在新建的时候传入了后续中间件next，形成责任链的链式调用。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// 另外可以看到在这个地方将request和response的实际处理函数赋值成了底层的通用函数。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (w <span style=color:#ff79c6>*</span>middleware) <span style=color:#50fa7b>NewHandler</span>(_ context.Context, next http.Handler) http.Handler {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>guest{
+</span></span><span style=display:flex><span>		handleRequest:  w.m.HandleRequest,
+</span></span><span style=display:flex><span>		handleResponse: w.m.HandleResponse,
+</span></span><span style=display:flex><span>		next:           next,
+</span></span><span style=display:flex><span>		features:       w.m.<span style=color:#50fa7b>Features</span>(),
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在处理网络请求的时候首先将http.ResponseWriter、*http.Request、next http.Handler、enabled Features组装成requestState放到context中。然后分别调用HandleRequest、next（handler）、HandleResponse。（requestState是非常重要的一个结构体）。这里的</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// ServeHTTP implements http.Handler
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (g <span style=color:#ff79c6>*</span>guest) <span style=color:#50fa7b>ServeHTTP</span>(w http.ResponseWriter, r <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// The guest Wasm actually handles the request. As it may call host
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>// functions, we add context parameters of the current request.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	s <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>newRequestState</span>(w, r, g)
+</span></span><span style=display:flex><span>	ctx <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>WithValue</span>(r.<span style=color:#50fa7b>Context</span>(), requestStateKey{}, s)
+</span></span><span style=display:flex><span>	outCtx, ctxNext, requestErr <span style=color:#ff79c6>:=</span> g.<span style=color:#50fa7b>handleRequest</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> requestErr <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>handleErr</span>(w, requestErr)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// If buffering was enabled, ensure it flushes.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> bw, ok <span style=color:#ff79c6>:=</span> s.w.(<span style=color:#ff79c6>*</span>bufferingResponseWriter); ok {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>defer</span> bw.<span style=color:#50fa7b>release</span>()
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Returning zero means the guest wants to break the handler chain, and
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>// handle the response directly.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 这里注意是否继续执行只与next有关，与在handleRequest是否设置了返回无关。也就是说即使设置了返回，那么仍然可以设置继续（虽然这种写法是错误的），响应body就是两者之和，至于header等信息就看具体实现是先设置生效还是后设置生效。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>uint32</span>(ctxNext) <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Otherwise, the host calls the next handler.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	err <span style=color:#ff79c6>:=</span> s.<span style=color:#50fa7b>handleNext</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Finally, call the guest with the response or error
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> err = g.<span style=color:#50fa7b>handleResponse</span>(outCtx, <span style=color:#8be9fd;font-style:italic>uint32</span>(ctxNext<span style=color:#ff79c6>&gt;&gt;</span><span style=color:#bd93f9>32</span>), err); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>panic</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=middleware通用逻辑>middleware通用逻辑</h5><p>在<code>handler/middleware.go</code>文件中定义了wasm的通用逻辑，获取实例，以及调用wasm中定义的request和response的hander。NewMiddleware包含了host function的注册和wasm的验证。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>NewMiddleware</span>(ctx context.Context, guest []<span style=color:#8be9fd>byte</span>, host handler.Host, opts <span style=color:#ff79c6>...</span>Option) (Middleware, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 默认wasm运行时配置，及应用外部传入的配置。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	o <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>options{
+</span></span><span style=display:flex><span>  newRuntime:   DefaultRuntime,
+</span></span><span style=display:flex><span>		moduleConfig: wazero.<span style=color:#50fa7b>NewModuleConfig</span>(),
+</span></span><span style=display:flex><span>		logger:       api.NoopLogger{},
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> _, opt <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> opts {
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>opt</span>(o)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// runtime实例，默认的是wazero运行时
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	wr, err <span style=color:#ff79c6>:=</span> o.<span style=color:#50fa7b>newRuntime</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;wasm: error creating middleware: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	m <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>middleware{
+</span></span><span style=display:flex><span>		host:         host,
+</span></span><span style=display:flex><span>		runtime:      wr,
+</span></span><span style=display:flex><span>		moduleConfig: o.moduleConfig,
+</span></span><span style=display:flex><span>		guestConfig:  o.guestConfig,
+</span></span><span style=display:flex><span>		logger:       o.logger,
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// decode wasm二进制，解析为内存内的数据模式，验证代码需要导出的函数存在且签名正确
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#ff79c6>if</span> m.guestModule, err = m.<span style=color:#50fa7b>compileGuest</span>(ctx, guest); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		_ = wr.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// Detect and handle any host imports or lack thereof.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 检查用户wasm中的所有的导入定义，看看是否用到了WasiP1或者HttpHandler（也就是本项目模块abi）module。用到了就需要实例化对应的模块并链接。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	imports <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>detectImports</span>(m.guestModule.<span style=color:#50fa7b>ImportedFunctions</span>())
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>switch</span> {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>case</span> imports<span style=color:#ff79c6>&amp;</span>importWasiP1 <span style=color:#ff79c6>!=</span> <span style=color:#bd93f9>0</span>:
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 导入wasi中定义的host function
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> _, err = wasi_snapshot_preview1.<span style=color:#50fa7b>Instantiate</span>(ctx, m.runtime); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			_ = wr.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;wasm: error instantiating wasi: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>fallthrough</span> <span style=color:#6272a4>// proceed to configure any http_handler imports
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>case</span> imports<span style=color:#ff79c6>&amp;</span>importHttpHandler <span style=color:#ff79c6>!=</span> <span style=color:#bd93f9>0</span>:
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 注册所有的host function
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> _, err = m.<span style=color:#50fa7b>instantiateHost</span>(ctx); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			_ = wr.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;wasm: error instantiating host: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 这里面实例化了一个wasm app，主要执行下初始函数验证下没有错误以尽早发现错误fail-fast。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> g, err <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>newGuest</span>(ctx); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		_ = wr.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		m.pool.<span style=color:#50fa7b>Put</span>(g)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> m, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>compileHost就是注册所有的host function。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>middleware) <span style=color:#50fa7b>compileHost</span>(ctx context.Context) (wazero.CompiledModule, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> compiled, err <span style=color:#ff79c6>:=</span> m.runtime.<span style=color:#50fa7b>NewHostModuleBuilder</span>(handler.HostModule).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithGoFunction</span>(wazeroapi.<span style=color:#50fa7b>GoFunc</span>(m.enableFeatures), []wazeroapi.ValueType{i32}, []wazeroapi.ValueType{i32}).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithParameterNames</span>(<span style=color:#f1fa8c>&#34;features&#34;</span>).<span style=color:#50fa7b>Export</span>(handler.FuncEnableFeatures).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithGoModuleFunction</span>(wazeroapi.<span style=color:#50fa7b>GoModuleFunc</span>(m.getConfig), []wazeroapi.ValueType{i32, i32}, []wazeroapi.ValueType{i32}).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithParameterNames</span>(<span style=color:#f1fa8c>&#34;buf&#34;</span>, <span style=color:#f1fa8c>&#34;buf_limit&#34;</span>).<span style=color:#50fa7b>Export</span>(handler.FuncGetConfig).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithGoFunction</span>(wazeroapi.<span style=color:#50fa7b>GoFunc</span>(m.logEnabled), []wazeroapi.ValueType{i32}, []wazeroapi.ValueType{i32}).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithParameterNames</span>(<span style=color:#f1fa8c>&#34;level&#34;</span>).<span style=color:#50fa7b>Export</span>(handler.FuncLogEnabled).
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 这里就是注册一个set_method这个host函数，这样wasm程序就可以通过调用这个函数来修改http method。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithGoModuleFunction</span>(wazeroapi.<span style=color:#50fa7b>GoModuleFunc</span>(m.setMethod), []wazeroapi.ValueType{i32, i32}, []wazeroapi.ValueType{}).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>WithParameterNames</span>(<span style=color:#f1fa8c>&#34;method&#34;</span>, <span style=color:#f1fa8c>&#34;method_len&#34;</span>).<span style=color:#50fa7b>Export</span>(handler.FuncSetMethod<span style=color:#6272a4>/*&#34;set_method&#34;*/</span>).
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>//......more function
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#50fa7b>Compile</span>(ctx); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;wasm: error compiling host: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> compiled, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>以setMethod为例看下一个host function的实现，先吧数据读出来，然后调用host的SetMethod，这里之所以转到host是因为不同的网络框架请求和返回结构体不一样，所以这里实际的设置转到了nethttp下的host。实际的设置是从ctx中把request拿出来然后设置。这里之所以ctx中能拿到也是跟wazero这个运行时有关系，它在所有函数调用不管是host还是wasm都维持了context传递，所以它的状态不用通过全局变量保存，直接通过context传递就可以了。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// getHeader implements the WebAssembly host function handler.FuncSetMethod.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>middleware) <span style=color:#50fa7b>setMethod</span>(ctx context.Context, mod wazeroapi.Module, params []<span style=color:#8be9fd>uint64</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 数据指针和数据长度
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  method <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>uint32</span>(params[<span style=color:#bd93f9>0</span>])
+</span></span><span style=display:flex><span>	methodLen <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>uint32</span>(params[<span style=color:#bd93f9>1</span>])
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 对request的设置都必须在next handler执行之前（不然也没有意义）
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	_ = <span style=color:#50fa7b>mustBeforeNext</span>(ctx, <span style=color:#f1fa8c>&#34;set&#34;</span>, <span style=color:#f1fa8c>&#34;method&#34;</span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> p <span style=color:#8be9fd>string</span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> methodLen <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>panic</span>(<span style=color:#f1fa8c>&#34;HTTP method cannot be empty&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 从wasm的memory中读取数据，这里传入的&#34;method&#34;是打日志用的，真正有意义的是其他三个值。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	p = <span style=color:#50fa7b>mustReadString</span>(mod.<span style=color:#50fa7b>Memory</span>(), <span style=color:#f1fa8c>&#34;method&#34;</span>, method, methodLen)
+</span></span><span style=display:flex><span>	m.host.<span style=color:#50fa7b>SetMethod</span>(ctx, p)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// SetMethod implements the same method as documented on handler.Host.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// 实际设置Method函数，从ctx中取出request结构体，进行赋值。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (host) <span style=color:#50fa7b>SetMethod</span>(ctx context.Context, method <span style=color:#8be9fd>string</span>) {
+</span></span><span style=display:flex><span>	r <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>requestStateFromContext</span>(ctx).r
+</span></span><span style=display:flex><span>	r.Method = method
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// requestStateFromContext就是从ctx中获取到*requestState
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>requestStateFromContext</span>(ctx context.Context) <span style=color:#ff79c6>*</span>requestState {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> ctx.<span style=color:#50fa7b>Value</span>(requestStateKey{}).(<span style=color:#ff79c6>*</span>requestState)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h3 id=边界情况检查>边界情况检查</h3><p>对于很多情况都有检查，比如说不能在HandleResponseFn中修改request信息，没有开启<em>FeatureBufferResponse</em>就不能修改来自最终网络调用的返回等。</p><p>但是有一些奇怪的行为是可以运行的（但是当你在写这样的代码的时候，你会意识到这是逻辑错误），比如在HandleRequestFn设置response信息，同时next为true去执行后续中间件，最终client得到的body就是两者叠加（是否开启<em>FeatureBufferResponse</em>无影响）。因为这个writer先被HandleRequestFn写了信息，又被来自网络调用写了信息，读的时候自然就都读出来了。例如使用如下的代码</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	handler.HandleRequestFn = handleRequest
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// handleRequest serves a static response from the Dapr sidecar.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleRequest</span>(req api.Request, resp api.Response) (next <span style=color:#8be9fd>bool</span>, reqCtx <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Headers</span>().<span style=color:#50fa7b>Set</span>(<span style=color:#f1fa8c>&#34;Content-Type&#34;</span>, <span style=color:#f1fa8c>&#34;text/plain&#34;</span>)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>WriteString</span>(<span style=color:#f1fa8c>&#34;hello &#34;</span> <span style=color:#ff79c6>+</span> req.<span style=color:#50fa7b>GetURI</span>())
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>true</span>, <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h3 id=使用案例分析>使用案例分析</h3><p>在<a href=https://github.com/Taction/dapr-wasm-example/tree/main/middleware/go>middleware examples</a>中给出了一些使用案例。这里简单罗列下比较常见的几个使用场景：</p><h4 id=拦截请求>拦截请求</h4><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/http-wasm/http-wasm-guest-tinygo/handler&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/http-wasm/http-wasm-guest-tinygo/handler/api&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	handler.HandleRequestFn = handleRequest
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// handleRequest serves a static response from the Dapr sidecar.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleRequest</span>(req api.Request, resp api.Response) (next <span style=color:#8be9fd>bool</span>, reqCtx <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Headers</span>().<span style=color:#50fa7b>Set</span>(<span style=color:#f1fa8c>&#34;Content-Type&#34;</span>, <span style=color:#f1fa8c>&#34;text/plain&#34;</span>)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>WriteString</span>(<span style=color:#f1fa8c>&#34;Hello, this is wasm middleware, you are requesting: &#34;</span> <span style=color:#ff79c6>+</span> req.<span style=color:#50fa7b>GetURI</span>())
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>false</span>, <span style=color:#bd93f9>0</span> <span style=color:#6272a4>// do not execute next middleware
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span></code></pre></div><p>在<code>handleRequest</code>函数中可以直接设置网络请求返回，这对通过请求中的某些数据判断拦截请求的场景非常有用。可以注意到<code>handleRequest</code>有两个返回值，分别是代表是否执行后续中间件/请求逻辑布尔类型的next，以及用于上下文保持的uint32类型reqCtx。当拦截请求时next应该返回false。</p><h4 id=修改请求返回数据>修改请求返回数据</h4><p>用户也可以通过<code>handleResponse</code>函数对请求返回数据进行修改。包括header、body、trailer信息。下面是一个修改返回的例子：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;bytes&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/http-wasm/http-wasm-guest-tinygo/handler&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/http-wasm/http-wasm-guest-tinygo/handler/api&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	handler.Host.<span style=color:#50fa7b>EnableFeatures</span>(api.FeatureBufferResponse) <span style=color:#6272a4>// change response must enable buffer response feature
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	handler.HandleResponseFn = handleResponse
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// handleResponse can modify the response
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleResponse</span>(reqCtx <span style=color:#8be9fd>uint32</span>, req api.Request, resp api.Response, isError <span style=color:#8be9fd>bool</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// get the original response body
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	buf <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>bytes.Buffer{}
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>WriteTo</span>(buf)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Headers</span>().<span style=color:#50fa7b>Set</span>(<span style=color:#f1fa8c>&#34;Content-Type&#34;</span>, <span style=color:#f1fa8c>&#34;text/plain&#34;</span>)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// modify the response body, adding a prefix &#34;hello&#34;
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>WriteString</span>(<span style=color:#f1fa8c>&#34;hello &#34;</span>)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>Write</span>(buf.<span style=color:#50fa7b>Bytes</span>())
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这里值得注意的是，如果想要修改返回信息，必须开启<code>BufferRespons</code>功能，如上述代码所示就是在main函数中设置功能开启。在<code>handleResponse</code>函数中可以获取请求和返回的信息，以及设置返回信息。</p><h4 id=上下文保持>上下文保持</h4><p>在某些场景下，用户可能需要对网络请求数据进行处理，并且在<code>handleResponse</code>阶段仍然能够获取到这些数据。这就可以通过上下文保持的功能来实现：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/http-wasm/http-wasm-guest-tinygo/handler&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/http-wasm/http-wasm-guest-tinygo/handler/api&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	handler.Host.<span style=color:#50fa7b>EnableFeatures</span>(api.FeatureBufferResponse)
+</span></span><span style=display:flex><span>	handler.HandleRequestFn = handleRequest
+</span></span><span style=display:flex><span>	handler.HandleResponseFn = handleResponse
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>var</span> globalContext = <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>uint32</span>]<span style=color:#8be9fd>string</span>)
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>var</span> contextCounter <span style=color:#8be9fd>uint32</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleResponse</span>(reqCtx <span style=color:#8be9fd>uint32</span>, req api.Request, resp api.Response, isError <span style=color:#8be9fd>bool</span>) {
+</span></span><span style=display:flex><span>	handler.Host.<span style=color:#50fa7b>Log</span>(api.LogLevelInfo, <span style=color:#f1fa8c>&#34;handleResponse get uri from context &#34;</span><span style=color:#ff79c6>+</span>globalContext[reqCtx])
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Serve response
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	resp.<span style=color:#50fa7b>Headers</span>().<span style=color:#50fa7b>Set</span>(<span style=color:#f1fa8c>&#34;Content-Type&#34;</span>, <span style=color:#f1fa8c>&#34;text/plain&#34;</span>)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>SetStatusCode</span>(<span style=color:#bd93f9>200</span>)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>WriteString</span>(<span style=color:#f1fa8c>&#34;Hello &#34;</span>)
+</span></span><span style=display:flex><span>	resp.<span style=color:#50fa7b>Body</span>().<span style=color:#50fa7b>WriteString</span>(globalContext[reqCtx])
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// handleRequest serves a static response from the Dapr sidecar.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleRequest</span>(req api.Request, resp api.Response) (next <span style=color:#8be9fd>bool</span>, reqCtx <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	contextCounter<span style=color:#ff79c6>++</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	globalContext[contextCounter] = req.<span style=color:#50fa7b>GetURI</span>()
+</span></span><span style=display:flex><span>	handler.Host.<span style=color:#50fa7b>Log</span>(api.LogLevelInfo, <span style=color:#f1fa8c>&#34;handleRequest uri: &#34;</span><span style=color:#ff79c6>+</span>req.<span style=color:#50fa7b>GetURI</span>())
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>true</span>, contextCounter <span style=color:#6272a4>// continue to execute the next middleware
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span></code></pre></div><p>在这个例子中，我们简单的做了一个示例，在<code>handleRequest</code>时将信息设置为与一个uint32类型的值相关联（reqCtx），当<code>handleResponse</code>被执行时这个值会被wasm运行时传入。通过<code>reqCtx</code>可以通过全局map获取到相关的信息。</p><hr><ul class=pager><li class=previous><a href=/2023/03/17/2023-03-17-debug-dapr-k8s.md/ data-toggle=tooltip data-placement=top title="Debug Dapr In K8s">&larr;
+Previous Post</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

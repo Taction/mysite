@@ -1,0 +1,268 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Knative KPA"><meta property="og:title" content="Knative KPA"><meta property="twitter:title" content="Knative KPA"><meta name=description content="云原生，WebAssembly, 开源爱好者，生活探险家 | 这里是 张超 的博客，与你一起发现更大的世界。"><meta property="og:description" content="云原生，WebAssembly, 开源爱好者，生活探险家 | 这里是 张超 的博客，与你一起发现更大的世界。"><meta property="twitter:description" content="云原生，WebAssembly, 开源爱好者，生活探险家 | 这里是 张超 的博客，与你一起发现更大的世界。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Knative KPA | 张超的博客 | Taction Blog</title><link rel=canonical href=/2021/12/07/2021-12-07-knative-kpa-use.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/platform title=platform>platform</a></div><h1>Knative KPA</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Tuesday, December 7, 2021</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>本文主要介绍kpa如何配置，以及以revision为角度介绍其中的各项配置的作用。</p><h5 id=简介>简介</h5><p>有全局配置和每个revision的配置。如果revision没有配置全局有配置的话就会使用全局配置。全局配置配置在<code>config-autoscaler</code>的configmap中。</p><h4 id=算法>算法</h4><p>Autoscaler基于每个Pod的平均请求数（并发数）进行自动扩缩容，默认并发数为100。Pod数=并发请求总数/容器并发数。如果服务中并发数设置为10，并且加载了50个并发请求的服务，则Autoscaler就会创建5个Pod。</p><p>Autoscaler实现了两种操作模式的缩放算法，Stable稳定模式和Panic恐慌模式：</p><ul><li><p>Stable稳定模式。</p><p>在稳定模式下，Autoscaler调整Deployment的大小，以实现每个Pod所需的平均并发数。Pod的并发数是根据60秒窗口内接收所有数据请求的平均数来计算的。</p></li><li><p>Panic恐慌模式。</p><p>Autoscaler计算60秒窗口内的平均并发数，系统需要1分钟稳定在所需的并发级别。但是，Autoscaler也会计算6秒的恐慌窗口，如果该窗口达到目标并发的2倍，则会进入恐慌模式。在恐慌模式下，Autoscaler在更短、更敏感的紧急窗口上工作。一旦紧急情况持续60秒后，Autoscaler将返回初始的60秒稳定窗口。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>                                                       |
+</span></span><span style=display:flex><span>                                  Panic Target---&gt;  +--| <span style=color:#bd93f9>20</span>
+</span></span><span style=display:flex><span>                                                    |  |
+</span></span><span style=display:flex><span>                                                    | &lt;------Panic Window
+</span></span><span style=display:flex><span>                                                    |  |
+</span></span><span style=display:flex><span>       Stable Target---&gt;  +-------------------------|--| <span style=color:#bd93f9>10</span>   CONCURRENCY
+</span></span><span style=display:flex><span>                          |                         |  |
+</span></span><span style=display:flex><span>                          |                      &lt;-----------Stable Window
+</span></span><span style=display:flex><span>                          |                         |  |
+</span></span><span style=display:flex><span>--------------------------+-------------------------+--+ <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span><span style=color:#bd93f9>120</span>                       <span style=color:#bd93f9>60</span>                           <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>                     TIME
+</span></span></code></pre></div></li></ul><h5 id=扩容类型>扩容类型</h5><p>The type of Autoscaler implementation (KPA or HPA) can be configured by using the <code>class</code> annotation.</p><ul><li><strong>Global settings key:</strong> <code>pod-autoscaler-class</code></li><li><strong>Per-revision annotation key:</strong> <code>autoscaling.knative.dev/class</code></li><li><strong>Possible values:</strong> <code>"kpa.autoscaling.knative.dev"</code> or <code>"hpa.autoscaling.knative.dev"</code></li><li><strong>Default:</strong> <code>"kpa.autoscaling.knative.dev"</code></li></ul><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span><span style=color:#ff79c6>apiVersion</span>: serving.knative.dev/v1
+</span></span><span style=display:flex><span><span style=color:#ff79c6>kind</span>: Service
+</span></span><span style=display:flex><span><span style=color:#ff79c6>metadata</span>:
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>name</span>: helloworld-go
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>namespace</span>: default
+</span></span><span style=display:flex><span><span style=color:#ff79c6>spec</span>:
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>template</span>:
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>metadata</span>:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>annotations</span>:
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>autoscaling.knative.dev/class</span>: <span style=color:#f1fa8c>&#34;kpa.autoscaling.knative.dev&#34;</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>spec</span>:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>containers</span>:
+</span></span><span style=display:flex><span>        - <span style=color:#ff79c6>image</span>: gcr.io/knative-samples/helloworld-go
+</span></span></code></pre></div><h3 id=configmap全局控制>configMap全局控制</h3><h4 id=参数及功能>参数及功能</h4><ul><li>container-concurrency-target-percentage: 容器并发请求数比例。容器实际最大并发数 = 容器最大并发请求数 * 容器并发请求数比例。例如，Revision 设置的容器最大并发请求数为：10，容器并发请求数比例为：70%， 那么在稳定状态下，实际容器的最大并发请求数为：7。这里额外注意一点容器最大并发（某一时刻同时进行中的请求数）请求数<code>ContainerConcurrency</code>是定义在revision中的，默认值是0，代表不对最大并发做限制。</li><li>container-concurrency-target-default：容器并发请求默认值。当 Revision 中未设置容器最大并发请求数时，使用该默认值作为容器最大并发请求数</li><li>requests-per-second-target-default: 每秒请求并发（RPS）默认值。当使用RPS进行度量时，autoscaler 会依据此值进行扩缩容判断</li><li>target-burst-capacity：突发请求容量。在突发流量场景下，切换到 Activator 模式进行流量控制。取值范围为[-1,+∞)。-1表示一直使用 Activator 模式；0表示不使用突发流量功能。</li><li>stable-window： 稳定窗口期。稳定模式窗口期</li><li>panic-window-percentage：恐慌窗口比例。通过恐慌窗口比例，计算恐慌窗口期。恐慌窗口期 = 恐慌窗口比例 * 稳定窗口期/100</li><li>panic-threshold-percentage：恐慌模式比例阈值。当前并发请求数大于容器最大并发请求数 * 恐慌比例阈值，并且达到恐慌窗口期，则进入恐慌模式。</li><li>max-scale-up-rate：最大扩容速率。每次扩容允许的最大速率。当前最大扩容数 = 最大扩容速率 * Ready的Pod数量</li><li>max-scale-down-rate：最大缩容速率。</li><li>enable-scale-to-zero：允许缩容至0。</li><li>scale-to-zero-grace-period：缩容至0优雅下线时间。</li><li>scale-to-zero-pod-retention-period定义了在自动缩放器决定缩放到零后，最后一个pod将保留的最小时间。这个标志适用于pod启动非常慢，并且流量激增(需要更小的时间窗口来快速操作)，但断断续续的情况。这个配置和“scale-to-zero-grace-period”将有效地决定最后一个pod在没有流量后多久停止。</li><li>pod-autoscaler-class定义缩放类型</li><li>activator-capacity单个activator的task的容量。针对activator代理的请求，最小值是1，可以通过这个链接http://bit.ly/38XiCZ3查看计算算法</li></ul><p>&mdash;&mdash;- 以下内容不针对缩放，但是也是这个configmap下的网络配置项。</p><ul><li>initial-scale此值集群范围内生效，定义revision创建的时候的初始的副本数。可以被revision中的"autoscaling.knative.dev/initialScale" annotation配置覆盖。除非allow-zero-initial-scale is true否则必须大于0</li><li>allow-zero-initial-scale控制<code>initial-scale</code>和revision中的"autoscaling.knative.dev/initialScale" annotation配置是否允许被设置为0</li><li>max-scale此值集群范围内生效。定义一个revision最大的副本数，可以被revision中"autoscaling.knative.dev/maxScale" annotation配置覆盖。如果设置为0就是无上限。</li><li>scale-down-delay定义在决策器计算出来需要缩容后，缩容动作的延迟执行时间。如果在延迟期内又来了很多请求，那么就避免了新启动pod带来的冷启动开销。默认值为0，立刻缩容。</li><li>max-scale-limit一个revision缩放副本数上限的全局限制。如果设置为大于0的值，那么revision中的maxScale必须不为0并且不大于这个值。</li></ul><h5 id=例子>例子：</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span><span style=color:#ff79c6>apiVersion</span>: v1
+</span></span><span style=display:flex><span><span style=color:#ff79c6>kind</span>: ConfigMap
+</span></span><span style=display:flex><span><span style=color:#ff79c6>metadata</span>:
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>name</span>: config-autoscaler
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>namespace</span>: knative-serving
+</span></span><span style=display:flex><span><span style=color:#ff79c6>data</span>:
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>container-concurrency-target-percentage</span>: <span style=color:#f1fa8c>&#34;70&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>container-concurrency-target-default</span>: <span style=color:#f1fa8c>&#34;100&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>requests-per-second-target-default</span>: <span style=color:#f1fa8c>&#34;200&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>target-burst-capacity</span>: <span style=color:#f1fa8c>&#34;200&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>stable-window</span>: <span style=color:#f1fa8c>&#34;60s&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>panic-window-percentage</span>: <span style=color:#f1fa8c>&#34;10.0&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>panic-threshold-percentage</span>: <span style=color:#f1fa8c>&#34;200.0&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>max-scale-up-rate</span>: <span style=color:#f1fa8c>&#34;1000.0&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>max-scale-down-rate</span>: <span style=color:#f1fa8c>&#34;2.0&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>enable-scale-to-zero</span>: <span style=color:#f1fa8c>&#34;false&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>scale-to-zero-grace-period</span>: <span style=color:#f1fa8c>&#34;30s&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>scale-to-zero-pod-retention-period</span>: <span style=color:#f1fa8c>&#34;0s&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>pod-autoscaler-class</span>: <span style=color:#f1fa8c>&#34;kpa.autoscaling.knative.dev&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>activator-capacity</span>: <span style=color:#f1fa8c>&#34;100.0&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>initial-scale</span>: <span style=color:#f1fa8c>&#34;1&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>allow-zero-initial-scale</span>: <span style=color:#f1fa8c>&#34;false&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>max-scale</span>: <span style=color:#f1fa8c>&#34;0&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>scale-down-delay</span>: <span style=color:#f1fa8c>&#34;0s&#34;</span>
+</span></span><span style=display:flex><span> <span style=color:#ff79c6>max-scale-limit</span>: <span style=color:#f1fa8c>&#34;0&#34;</span>
+</span></span></code></pre></div><h3 id=revision中配置>revision中配置</h3><p>每个revision可以自由定义自己的缩放配置，配置项在annotion中。其中大部分配置项与configmap中的是一样的，将configmap中的配置key转化为小驼峰并且添加<code>autoscaling.knative.dev/</code>前缀就是配置的key。</p><ul><li>autoscaling.knative.dev/class 缩放类型kpa.autoscaling.knative.dev还是hpa.autoscaling.knative.dev默认kpa</li><li>autoscaling.knative.dev/minScale 最小副本数</li><li>autoscaling.knative.dev/maxScale 最大副本数</li><li>autoscaling.knative.dev/initialScale 初始副本数</li><li>autoscaling.knative.dev/scaleDownDelay 执行缩小副本数的延迟时间</li><li>autoscaling.knative.dev/metric 基于什么指标进行缩放:并发<code>concurrency</code>、每秒请求数<code>rps</code>、<code>cpu</code>、<code>memory</code></li><li>autoscaling.knative.dev/target 缩放指标的目标值。仅针对cpu（单核百分数）和memory（MiB）。</li><li>autoscaling.knative.dev/scaleToZeroPodRetentionPeriod 缩放到0之前等待时间</li><li>autoscaling.knative.dev/metricAggregationAlgorithm 注意：这是一个alpha特性，可能会被修改或移除。此指标的作用在于定义autoscaler平均指标的算法。仅作用于使用kpa扩缩容的服务。<code>linear</code>、指数衰减<code>weightedExponential</code></li><li>autoscaling.knative.dev/window 计算指标的时间窗口（为这个时间窗口内的平均值），越大越平滑反应越迟钝。仅作用于kpa扩缩容方式。最小6s最大1h。</li><li>autoscaling.knative.dev/targetUtilizationPercentage 定义revision所需的目标资源利用率，范围[1,100].对于concurrency和rps都生效。为了提高服务的可用性，并不是到达target才开始扩容，而是到达这个限制时就开始扩容。比如concurrency定义为10，此值为70（百分比），那么一个pod最大并发仍然是10，但是并发达到7的时候就开始进行扩容了。</li><li>autoscaling.knative.dev/targetBurstCapacity 定义revision的突发流量容量-1不限 0没有 大于0实际的值，其他值报错。</li><li>autoscaling.knative.dev/panicWindowPercentage 重要指标恐慌时间窗口百分比。最小值为1最大为100.由于autoscaler每2s进行一次计算(config-autoscaler的tick-interval配置项)，所以小于2s可能会错过点。如果设置为百分之一由于非常小，那么指标窗口最小就需要3.4分钟。任何小于1的值将不会生效。</li><li>autoscaling.knative.dev/panicThresholdPercentage 定义在panic时间窗口内指标达到多少百分比的时候将会触发恐慌模式。最小值为110，最大值为1000.越小越灵敏。</li></ul><h3 id=配置详解>配置详解</h3><h5 id=target-burst-capacity-tbc>target burst capacity (TBC)</h5><p>相比HPA，Knative会考虑更多的场景，其中一个比较重要的是流量突发的时候。
+除了Autoscaler会进入Panic模式更快的去扩容外，上面也提到过Activator和Queue-proxy本身也带有缓存请求的功能，这个功能的目的也是为了在请求流量突发来不及处理时，进行缓存再转发。但是非冷启动情况下的请求缓存，会被视为一种迫不得已的兜底行为，同时会带来一定的请求时延。
+Knative中会有很多的配置，可以调整用于突发流量的场景。下面为常见的配置项：</p><ul><li>container concurrency：容器并发度，如果设置为0，则视为不限制容器并发。</li><li>target utilization：目标使用率，达到该使用率后会被视为达到容器的并发度，会触发扩容。</li><li>target burst capacity (TBC) ：可容忍的请求爆发容量，这个参数比较关键而且不太好理解。</li></ul><p>举一个例子，假设我们的容器container concurrency被设置为50，目标使用率target utilization为80%，即每个容器目标是接收<code>50*80%=40</code>的并发请求，TBC设置为100。当有180的并发请求进来后，我们很容易算出最终会被扩容为5个副本（这里会按照目标请求40来计算），但实际上5个副本的最大容量为<code>5*50=250</code>个并发请求，则实际剩余可容忍的爆发为<code>250-180=70</code>个并发。
+当剩余可容忍的并发小于TBC时，Knative会让流量经过Activator，而不是直接发送到后端服务，那么在这个例子中，由于70&lt;TBC=100，此时相当于Knative认为剩余的爆发请求容量不足以支撑目标的可容忍容量（TBC），所以流量全部都会走到Activator再进行负载均衡转发，因为Activator可以感知到哪些容器目前接收的请求已经达到极限，哪些容器却还能继续接收更多请求。
+同时，如果在示例的场景中，再突然进来了100个请求，在扩容来不及的情况下，Activator会代理70个请求到后端服务，同时缓存30个请求，等后端服务有更多容量时再转发处理。
+由此可见，Activator缓存请求并非只是在冷启动时，在突发流量场景下，Activator也会起到相同的作用，而冷启动其实只是后端服务副本为0的一种特殊场景而已。
+从上面的分析可以看出，TBC参数十分重要，会影响到什么时候请求流量会经过Activator，什么时候则直接从网关到后端。但是，如果在非冷启动的时候，流量也经过Activator，增加了一层链路，对于延迟敏感的服务，有点得不偿失。
+那TBC应该设置成多少呢？这对于很多人来说，也是一个头疼的问题。
+这里给出一些参考：</p><ol><li>对于非CPU密集型的服务，例如常规的web应用、静态资源服务等，建议直接将TBC设置为0，同时container concurrency也设置为0，即不限制容器的请求并发。 当TBC=0时，系统剩余的可爆发请求容量会永远大于TBC，也意味着除了冷启动的时候，请求流量永远不会走到Activator，同时我建议设置Knative Service的最小保留副本数为1，这样Activator组件其实都不会被用到，也减少了一层链路。
+其实，我们使用Serverless的时候，很多的服务都是常规的在线业务，使用如上的配置，可以最小化请求延迟，增大RPS。</li><li>对于非常CPU密集型的服务、单线程等极端场景的服务，需要严格限制单个容器的请求并发，一般都需要设置container concurrency&lt;5，此时建议设置TBC=-1，因为这种场景下往往扩容等不及请求流量的突增。
+当TBC=-1，也意味着所有的请求，都会走到Activator，Activator会重新转发请求或者缓存超额的请求，这个时候的Activator组件在非冷启动情况下就有存在的价值。</li><li>对于除了上述两种情况，还需要限制一些并发请求的场景，此时一般container concurrency>5，建议设置TBC为一个预期的值，例如100，至于这个值具体设置多少，需要系统管理员根据实际的场景去评估。</li></ol><h3 id=附>附：</h3><h5 id=来自configmap中的说明>来自configmap中的说明</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span>    <span style=color:#6272a4>################################</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#                              #</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#    EXAMPLE CONFIGURATION     #</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#                              #</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>################################</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># This block is not actually functional configuration,</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># but serves to illustrate the available configuration</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># options and document them in a way that is accessible</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># to users that `kubectl edit` this config map.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># These sample configuration options may be copied out of</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># this example block and unindented to be in the data block</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># to actually change the configuration.</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The Revision ContainerConcurrency field specifies the maximum number</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># of requests the Container can handle at once. Container concurrency</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># target percentage is how much of that maximum to use in a stable</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># state. E.g. if a Revision specifies ContainerConcurrency of 10, then</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># the Autoscaler will try to maintain 7 concurrent connections per pod</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># on average.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Note: this limit will be applied to container concurrency set at every</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># level (ConfigMap, Revision Spec or Annotation).</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># For legacy and backwards compatibility reasons, this value also accepts</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># fractional values in (0, 1] interval (i.e. 0.7 ⇒ 70%).</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Thus minimal percentage value must be greater than 1.0, or it will be</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># treated as a fraction.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># NOTE: that this value does not affect actual number of concurrent requests</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#       the user container may receive, but only the average number of requests</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#       that the revision pods will receive.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>container-concurrency-target-percentage</span>: <span style=color:#f1fa8c>&#34;70&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The container concurrency target default is what the Autoscaler will</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># try to maintain when concurrency is used as the scaling metric for the</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Revision and the Revision specifies unlimited concurrency.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># When revision explicitly specifies container concurrency, that value</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># will be used as a scaling target for autoscaler.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># When specifying unlimited concurrency, the autoscaler will</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># horizontally scale the application based on this target concurrency.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># This is what we call &#34;soft limit&#34; in the documentation, i.e. it only</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># affects number of pods and does not affect the number of requests</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># individual pod processes.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The value must be a positive number such that the value multiplied</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># by container-concurrency-target-percentage is greater than 0.01.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># NOTE: that this value will be adjusted by application of</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#       container-concurrency-target-percentage, i.e. by default</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#       the system will target on average 70 concurrent requests</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>#       per revision pod.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># NOTE: Only one metric can be used for autoscaling a Revision.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>container-concurrency-target-default</span>: <span style=color:#f1fa8c>&#34;100&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The requests per second (RPS) target default is what the Autoscaler will</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># try to maintain when RPS is used as the scaling metric for a Revision and</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># the Revision specifies unlimited RPS. Even when specifying unlimited RPS,</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># the autoscaler will horizontally scale the application based on this</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># target RPS.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Must be greater than 1.0.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># NOTE: Only one metric can be used for autoscaling a Revision.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>requests-per-second-target-default</span>: <span style=color:#f1fa8c>&#34;200&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The target burst capacity specifies the size of burst in concurrent</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># requests that the system operator expects the system will receive.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Autoscaler will try to protect the system from queueing by introducing</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Activator in the request path if the current spare capacity of the</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># service is less than this setting.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># If this setting is 0, then Activator will be in the request path only</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># when the revision is scaled to 0.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># If this setting is &gt; 0 and container-concurrency-target-percentage is</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># 100% or 1.0, then activator will always be in the request path.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># -1 denotes unlimited target-burst-capacity and activator will always</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># be in the request path.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Other negative values are invalid.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>target-burst-capacity</span>: <span style=color:#f1fa8c>&#34;200&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># When operating in a stable mode, the autoscaler operates on the</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># average concurrency over the stable window.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Stable window must be in whole seconds.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>stable-window</span>: <span style=color:#f1fa8c>&#34;60s&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># When observed average concurrency during the panic window reaches</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># panic-threshold-percentage the target concurrency, the autoscaler</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># enters panic mode. When operating in panic mode, the autoscaler</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># scales on the average concurrency over the panic window which is</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># panic-window-percentage of the stable-window.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Must be in the [1, 100] range.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># When computing the panic window it will be rounded to the closest</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># whole second, at least 1s.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>panic-window-percentage</span>: <span style=color:#f1fa8c>&#34;10.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The percentage of the container concurrency target at which to</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># enter panic mode when reached within the panic window.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>panic-threshold-percentage</span>: <span style=color:#f1fa8c>&#34;200.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Max scale up rate limits the rate at which the autoscaler will</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># increase pod count. It is the maximum ratio of desired pods versus</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># observed pods.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Cannot be less or equal to 1.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># I.e with value of 2.0 the number of pods can at most go N to 2N</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># over single Autoscaler period (2s), but at least N to</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># N+1, if Autoscaler needs to scale up.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>max-scale-up-rate</span>: <span style=color:#f1fa8c>&#34;1000.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Max scale down rate limits the rate at which the autoscaler will</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># decrease pod count. It is the maximum ratio of observed pods versus</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># desired pods.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Cannot be less or equal to 1.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># I.e. with value of 2.0 the number of pods can at most go N to N/2</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># over single Autoscaler evaluation period (2s), but at</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># least N to N-1, if Autoscaler needs to scale down.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>max-scale-down-rate</span>: <span style=color:#f1fa8c>&#34;2.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Scale to zero feature flag.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>enable-scale-to-zero</span>: <span style=color:#f1fa8c>&#34;true&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Scale to zero grace period is the time an inactive revision is left</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># running before it is scaled to zero (must be positive, but recommended</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># at least a few seconds if running with mesh networking).</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># This is the upper limit and is provided not to enforce timeout after</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># the revision stopped receiving requests for stable window, but to</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># ensure network reprogramming to put activator in the path has completed.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># If the system determines that a shorter period is satisfactory,</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># then the system will only wait that amount of time before scaling to 0.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># NOTE: this period might actually be 0, if activator has been</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># in the request path sufficiently long.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># If there is necessity for the last pod to linger longer use</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># scale-to-zero-pod-retention-period flag.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>scale-to-zero-grace-period</span>: <span style=color:#f1fa8c>&#34;30s&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Scale to zero pod retention period defines the minimum amount</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># of time the last pod will remain after Autoscaler has decided to</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># scale to zero.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># This flag is for the situations where the pod startup is very expensive</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># and the traffic is bursty (requiring smaller windows for fast action),</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># but patchy.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The larger of this flag and `scale-to-zero-grace-period` will effectively</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># determine how the last pod will hang around.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>scale-to-zero-pod-retention-period</span>: <span style=color:#f1fa8c>&#34;0s&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># pod-autoscaler-class specifies the default pod autoscaler class</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># that should be used if none is specified. If omitted, the Knative</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># Horizontal Pod Autoscaler (KPA) is used by default.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>pod-autoscaler-class</span>: <span style=color:#f1fa8c>&#34;kpa.autoscaling.knative.dev&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The capacity of a single activator task.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The `unit` is one concurrent request proxied by the activator.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># activator-capacity must be at least 1.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># This value is used for computation of the Activator subset size.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># See the algorithm here: http://bit.ly/38XiCZ3.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># TODO(vagababov): tune after actual benchmarking.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>activator-capacity</span>: <span style=color:#f1fa8c>&#34;100.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># initial-scale is the cluster-wide default value for the initial target</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># scale of a revision after creation, unless overridden by the</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># &#34;autoscaling.knative.dev/initialScale&#34; annotation.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># This value must be greater than 0 unless allow-zero-initial-scale is true.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>initial-scale</span>: <span style=color:#f1fa8c>&#34;1&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># allow-zero-initial-scale controls whether either the cluster-wide initial-scale flag,</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># or the &#34;autoscaling.knative.dev/initialScale&#34; annotation, can be set to 0.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>allow-zero-initial-scale</span>: <span style=color:#f1fa8c>&#34;false&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># max-scale is the cluster-wide default value for the max scale of a revision,</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># unless overridden by the &#34;autoscaling.knative.dev/maxScale&#34; annotation.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># If set to 0, the revision has no maximum scale.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>max-scale</span>: <span style=color:#f1fa8c>&#34;0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># scale-down-delay is the amount of time that must pass at reduced</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># concurrency before a scale down decision is applied. This can be useful,</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># for example, to maintain replica count and avoid a cold start penalty if</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># more requests come in within the scale down delay period.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># The default, 0s, imposes no delay at all.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>scale-down-delay</span>: <span style=color:#f1fa8c>&#34;0s&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># max-scale-limit sets the maximum permitted value for the max scale of a revision.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># When this is set to a positive value, a revision with a maxScale above that value</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># (including a maxScale of &#34;0&#34; = unlimited) is disallowed.</span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4># A value of zero (the default) allows any limit, including unlimited.</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>max-scale-limit</span>: <span style=color:#f1fa8c>&#34;0&#34;</span>
+</span></span></code></pre></div><h5 id=参考文档>参考文档</h5><p><a href=https://knative.dev/docs/serving/autoscaling/autoscaler-types/>Supported Autoscaler types</a></p><p><a href=https://knative-sample.com/20-serving/10-autoscaler-kpa/>自动扩缩容 - Autoscaler</a></p><p><a href=https://segmentfault.com/a/1190000022665332>跟我一起学Knative(4)&ndash;Serving 自动扩缩容</a></p><p><a href="https://help.aliyun.com/document_detail/186027.html?utm_content=g_1000230851&amp;spm=5176.20966629.toubu.3.f2991ddcpxxvD1#title-ixk-3vz-gna">基于流量请求数实现服务自动扩缩容</a></p><p><a href></a></p><p><a href></a></p><p><a href></a></p><hr><ul class=pager><li class=previous><a href=/2021/12/01/2021-12-01-knative-demo.md/ data-toggle=tooltip data-placement=top title=Knative自定义流程Demo>&larr;
+Previous Post</a></li><li class=next><a href=/2021/12/18/2021-12-18-dco-rebase.md/ data-toggle=tooltip data-placement=top title=使用rebase对提交进行DCO签名>Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

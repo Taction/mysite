@@ -1,0 +1,147 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Knative Queue"><meta property="og:title" content="Knative Queue"><meta property="twitter:title" content="Knative Queue"><meta name=description content="queue是knative在每个deployment都会为业务容器注入的&#34;sidecar&#34;，负责其入口流量代理行为。并且会对请求进行计数，对外暴露metrice接口，autoscaler会定期拉取这些指标数据。"><meta property="og:description" content="queue是knative在每个deployment都会为业务容器注入的&#34;sidecar&#34;，负责其入口流量代理行为。并且会对请求进行计数，对外暴露metrice接口，autoscaler会定期拉取这些指标数据。"><meta property="twitter:description" content="queue是knative在每个deployment都会为业务容器注入的&#34;sidecar&#34;，负责其入口流量代理行为。并且会对请求进行计数，对外暴露metrice接口，autoscaler会定期拉取这些指标数据。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Knative Queue | 张超的博客 | Taction Blog</title><link rel=canonical href=/2021/12/01/2021-12-01-knative-queue.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/knative title=Knative>Knative</a></div><h1>Knative Queue</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Wednesday, December 1, 2021</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h3 id=简介>简介</h3><p>queue是knative在每个deployment都会为业务容器注入的"sidecar"，负责其入口流量代理行为。并且会对请求进行计数，对外暴露metrice接口，autoscaler会定期拉取这些指标数据。</p><p>queue的几个端口表示如下：</p><p>• 8012： queue-proxy 代理的http端口，流量的入口都会到 8012
+• 8013： http2 端口，用于grpc流量的转发
+• 8022： queue-proxy 管理端口，如健康检查
+• 9090： queue-proxy的监控端口，暴露指标供 autoscaler 采集，用于扩缩容
+• 9091： prometheus 应用监控指标（请求数，响应时长等）</p><p>此外还有一个通过环境变量USER_PORT配置的用户容器端口，即业务实际暴露的服务端口，最初是在ksvc container port中配置的，然后一步一步带下来的。</p><h3 id=指标上报>指标上报</h3><h4 id=指标上报server>指标上报server</h4><blockquote><p>queue的指标上报是比较简单的一个逻辑，首先是在有请求的时候进行计数，然后暴露拉取接口。</p></blockquote><p>queue会启动一个metrics server。同时支持protobuf和json格式的数据上报，原理都是一致的， 接下来以http reporter为例介绍。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>buildMetricsServer</span>(promStatReporter <span style=color:#ff79c6>*</span>queue.PrometheusStatsReporter, protobufStatReporter <span style=color:#ff79c6>*</span>queue.ProtobufStatsReporter) <span style=color:#ff79c6>*</span>http.Server {
+</span></span><span style=display:flex><span>   metricsMux <span style=color:#ff79c6>:=</span> http.<span style=color:#50fa7b>NewServeMux</span>()
+</span></span><span style=display:flex><span>   metricsMux.<span style=color:#50fa7b>Handle</span>(<span style=color:#f1fa8c>&#34;/metrics&#34;</span>, queue.<span style=color:#50fa7b>NewStatsHandler</span>(promStatReporter, protobufStatReporter))
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>http.Server{
+</span></span><span style=display:flex><span>      Addr:    <span style=color:#f1fa8c>&#34;:&#34;</span> <span style=color:#ff79c6>+</span> strconv.<span style=color:#50fa7b>Itoa</span>(networking.AutoscalingQueueMetricsPort),
+</span></span><span style=display:flex><span>      Handler: metricsMux,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>reporter创建，首先检查指标上报labelnamespace、configuration、revision、pod是否配置，然后都是prometheus一些模式化的代码，将各个指标数据设置为自己的成员变量。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// NewPrometheusStatsReporter creates a reporter that collects and reports queue metrics.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>NewPrometheusStatsReporter</span>(namespace, config, revision, pod <span style=color:#8be9fd>string</span>, reportingPeriod time.Duration) (<span style=color:#ff79c6>*</span>PrometheusStatsReporter, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> namespace <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;namespace must not be empty&#34;</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> config <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;config must not be empty&#34;</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> revision <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;revision must not be empty&#34;</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> pod <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;pod must not be empty&#34;</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   registry <span style=color:#ff79c6>:=</span> prometheus.<span style=color:#50fa7b>NewRegistry</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> _, gv <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> []<span style=color:#ff79c6>*</span>prometheus.GaugeVec{
+</span></span><span style=display:flex><span>      requestsPerSecondGV, proxiedRequestsPerSecondGV,
+</span></span><span style=display:flex><span>      averageConcurrentRequestsGV, averageProxiedConcurrentRequestsGV,
+</span></span><span style=display:flex><span>      processUptimeGV} {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> registry.<span style=color:#50fa7b>Register</span>(gv); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;register metric failed: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   labels <span style=color:#ff79c6>:=</span> prometheus.Labels{
+</span></span><span style=display:flex><span>      destinationNsLabel:     namespace,
+</span></span><span style=display:flex><span>      destinationConfigLabel: config,
+</span></span><span style=display:flex><span>      destinationRevLabel:    revision,
+</span></span><span style=display:flex><span>      destinationPodLabel:    pod,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>PrometheusStatsReporter{
+</span></span><span style=display:flex><span>      handler:   promhttp.<span style=color:#50fa7b>HandlerFor</span>(registry, promhttp.HandlerOpts{}),
+</span></span><span style=display:flex><span>      startTime: time.<span style=color:#50fa7b>Now</span>(),
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      reportingPeriodSeconds: reportingPeriod.<span style=color:#50fa7b>Seconds</span>(),
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      requestsPerSecond:                requestsPerSecondGV.<span style=color:#50fa7b>With</span>(labels),
+</span></span><span style=display:flex><span>      proxiedRequestsPerSecond:         proxiedRequestsPerSecondGV.<span style=color:#50fa7b>With</span>(labels),
+</span></span><span style=display:flex><span>      averageConcurrentRequests:        averageConcurrentRequestsGV.<span style=color:#50fa7b>With</span>(labels),
+</span></span><span style=display:flex><span>      averageProxiedConcurrentRequests: averageProxiedConcurrentRequestsGV.<span style=color:#50fa7b>With</span>(labels),
+</span></span><span style=display:flex><span>      processUptime:                    processUptimeGV.<span style=color:#50fa7b>With</span>(labels),
+</span></span><span style=display:flex><span>   }, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>请求数量的记录借助了一个中间的结构体<code>RequestStats</code>，在构建代理pod请求的server的时候会传入此结构体的一个实例，在请求到达时进行计数。然后会周期取出各项指标，设置到<code>PrometheusStatsReporter</code>中供拉取指标时使用。</p><h4 id=指标记录>指标记录</h4><p>将proxyHandler路由中间件逻辑简化后如下所示，就是在流量到达和转发完成后分别触发stats HandleEvent来进行记录。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// ProxyHandler sends requests to the `next` handler at a rate controlled by
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// the passed `breaker`, while recording stats to `stats`.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>ProxyHandler</span>(breaker <span style=color:#ff79c6>*</span>Breaker, stats <span style=color:#ff79c6>*</span>network.RequestStats, tracingEnabled <span style=color:#8be9fd>bool</span>, next http.Handler) http.HandlerFunc {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(w http.ResponseWriter, r <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>      
+</span></span><span style=display:flex><span>      stats.<span style=color:#50fa7b>HandleEvent</span>(network.ReqEvent{Time: time.<span style=color:#50fa7b>Now</span>(), Type: in})
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>         stats.<span style=color:#50fa7b>HandleEvent</span>(network.ReqEvent{Time: time.<span style=color:#50fa7b>Now</span>(), Type: out})
+</span></span><span style=display:flex><span>      }()
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// ......
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      next.<span style=color:#50fa7b>ServeHTTP</span>(w, r)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>HandleEvent就是针对不同情况下的出入流量行为进行对应的计数。如果入请求就将并发数和请求数增加。如果是请求结束就将并发数减一。如果是activator代理过来的入请求就在以上基础上对将代理并发数和请求数加一，如果是代理请求结束就在以上基础上将代理并发减一。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// HandleEvent handles an incoming or outgoing request event and updates
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// the state accordingly.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>RequestStats) <span style=color:#50fa7b>HandleEvent</span>(event ReqEvent) {
+</span></span><span style=display:flex><span>   s.mux.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> s.mux.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   s.<span style=color:#50fa7b>compute</span>(event.Time)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>switch</span> event.Type {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> ProxiedIn:
+</span></span><span style=display:flex><span>      s.proxiedConcurrency<span style=color:#ff79c6>++</span>
+</span></span><span style=display:flex><span>      s.proxiedCount<span style=color:#ff79c6>++</span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>fallthrough</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> ReqIn:
+</span></span><span style=display:flex><span>      s.requestCount<span style=color:#ff79c6>++</span>
+</span></span><span style=display:flex><span>      s.concurrency<span style=color:#ff79c6>++</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> ProxiedOut:
+</span></span><span style=display:flex><span>      s.proxiedConcurrency<span style=color:#ff79c6>--</span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>fallthrough</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> ReqOut:
+</span></span><span style=display:flex><span>      s.concurrency<span style=color:#ff79c6>--</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=指标更新>指标更新</h4><p>指标更新是在main函数中定义的，定时从stats中取出指标，将其更新到http和protobuf的metrics server中。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>   protoStatReporter <span style=color:#ff79c6>:=</span> queue.<span style=color:#50fa7b>NewProtobufStatsReporter</span>(env.ServingPod, reportingPeriod)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   reportTicker <span style=color:#ff79c6>:=</span> time.<span style=color:#50fa7b>NewTicker</span>(reportingPeriod)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> reportTicker.<span style=color:#50fa7b>Stop</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   stats <span style=color:#ff79c6>:=</span> network.<span style=color:#50fa7b>NewRequestStats</span>(time.<span style=color:#50fa7b>Now</span>())
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>for</span> now <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> reportTicker.C {
+</span></span><span style=display:flex><span>         stat <span style=color:#ff79c6>:=</span> stats.<span style=color:#50fa7b>Report</span>(now)
+</span></span><span style=display:flex><span>         promStatReporter.<span style=color:#50fa7b>Report</span>(stat)
+</span></span><span style=display:flex><span>         protoStatReporter.<span style=color:#50fa7b>Report</span>(stat)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>对于http metrics server指标更新非常简单，由于这些指标项已经按prometheus要求初始化，只要对这些值进行设置就可以。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Report captures request metrics.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (r <span style=color:#ff79c6>*</span>PrometheusStatsReporter) <span style=color:#50fa7b>Report</span>(stats network.RequestStatsReport) {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Requests per second is a rate over time while concurrency is not.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   r.requestsPerSecond.<span style=color:#50fa7b>Set</span>(stats.RequestCount <span style=color:#ff79c6>/</span> r.reportingPeriodSeconds)
+</span></span><span style=display:flex><span>   r.proxiedRequestsPerSecond.<span style=color:#50fa7b>Set</span>(stats.ProxiedRequestCount <span style=color:#ff79c6>/</span> r.reportingPeriodSeconds)
+</span></span><span style=display:flex><span>   r.averageConcurrentRequests.<span style=color:#50fa7b>Set</span>(stats.AverageConcurrency)
+</span></span><span style=display:flex><span>   r.averageProxiedConcurrentRequests.<span style=color:#50fa7b>Set</span>(stats.AverageProxiedConcurrency)
+</span></span><span style=display:flex><span>   r.processUptime.<span style=color:#50fa7b>Set</span>(time.<span style=color:#50fa7b>Since</span>(r.startTime).<span style=color:#50fa7b>Seconds</span>())
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>如果你对这部分代码想要详细了解，但是对Prometheus收集指标不太了解的话，你可以在它的<a href=github.com/prometheus/client_golang>client项目</a>获得更多了解。</p><hr><ul class=pager><li class=previous><a href=/2021/12/01/2021-12-01-knative-scalefrom0.md/ data-toggle=tooltip data-placement=top title=Knative>&larr;
+Previous Post</a></li><li class=next><a href=/2021/12/01/2021-12-01-knative-demo.md/ data-toggle=tooltip data-placement=top title=Knative自定义流程Demo>Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

@@ -1,0 +1,157 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Actor to Actor call"><meta property="og:title" content="Actor to Actor call"><meta property="twitter:title" content="Actor to Actor call"><meta name=description content="在[wasmcloud actor 调用 actor](https://wasmcloud.dev/app-dev/a2a/)的文档中，有介绍如何通过actor调用actor，但是在查看[wasmcloudexamples](https://github.com/wasmCloud/examples)和[interfaces](https://github.com/wasmCloud/interfaces)示例项目的时候均没有看到示例。因此本文档从零开始创建一个actor调用actor的示例。"><meta property="og:description" content="在[wasmcloud actor 调用 actor](https://wasmcloud.dev/app-dev/a2a/)的文档中，有介绍如何通过actor调用actor，但是在查看[wasmcloudexamples](https://github.com/wasmCloud/examples)和[interfaces](https://github.com/wasmCloud/interfaces)示例项目的时候均没有看到示例。因此本文档从零开始创建一个actor调用actor的示例。"><meta property="twitter:description" content="在[wasmcloud actor 调用 actor](https://wasmcloud.dev/app-dev/a2a/)的文档中，有介绍如何通过actor调用actor，但是在查看[wasmcloudexamples](https://github.com/wasmCloud/examples)和[interfaces](https://github.com/wasmCloud/interfaces)示例项目的时候均没有看到示例。因此本文档从零开始创建一个actor调用actor的示例。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Actor to Actor call | 张超的博客 | Taction Blog</title><link rel=canonical href=/2022/11/06/2022-11-06-a2acall.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/wasmcloud title=wasmcloud>wasmcloud</a></div><h1>Actor to Actor call</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Sunday, November 6, 2022</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h3 id=概述>概述</h3><p>在<a href=https://wasmcloud.dev/app-dev/a2a/>wasmcloud actor 调用 actor</a>的文档中，有介绍如何通过actor调用actor，但是在查看<a href=https://github.com/wasmCloud/examples>wasmcloudexamples</a>和<a href=https://github.com/wasmCloud/interfaces>interfaces</a>示例项目的时候均没有看到示例。因此本文档从零开始创建一个actor调用actor的示例。</p><p>本示例涉及到一个interface项目，定义actor与actor之间的调用协议，只包含一个函数Upper将输入转化为大写；两个actor，发起请求方为actor client，接受请求并将请求内容转化为大写的为actor server。</p><p>这两个actor分别拥有go语言和rust语言实现，并且go和rust语言实现的actor具有相同的call alias。这意味着在测试本示例的时候可以忽略实现语言，可以部署一个任意语言的actor server和一个任意语言的actor client。另外根据wasmcloud的说明，当使用call alias的时候不允许重名，所以你应仅部署一种语言的actor server。</p><p>actor client通过使用wasmcloud的httpprovider来接收外部请求，并将http body发送到actor server。</p><p><img src=https://image-1255620078.cos.ap-nanjing.myqcloud.com/image-20221107155801950.png alt=image-20221107155801950></p><h3 id=创建项目>创建项目</h3><h4 id=根据模板创建项目>根据模板创建项目</h4><p>首先我们创建3个项目，分别是interface、actor client、actor server。其中：</p><p>interface我们命名为uppercase，定义interface的功能，将传入的字符串变成大写，参考<a href=https://wasmcloud.dev/app-dev/create-provider/new-interface/>创建interface流程</a>。</p><p>actor client是调用的发起方，actor server是被调用的actor。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>wash new interface uppercase
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>wash new actor actor-client --template-name hello
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>wash new actor actor-server --template-name hello
+</span></span></code></pre></div><p>同时我们创建go语言对应的两个actor</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>wash new actor actor-client-go --template-name echo-tinygo
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>wash new actor actor-server-go --template-name echo-tinygo
+</span></span></code></pre></div><p>这个时候你当前的目录下应该有以下几个文件夹</p><pre tabindex=0><code>$ ls
+actor-client    actor-client-go actor-server    actor-server-go uppercase
+</code></pre><h4 id=smithy定义修改>smithy定义修改</h4><p>首先让我们打开uppercase目录下的<code>uppercase.smithy</code>文件，修改为以下内容，定义交互ABI。这里需要注意<code>@wasmbus( actorReceive: true )</code> 通过定义<code>actorReceive</code>表明这是一个actor to actor的interface。</p><pre tabindex=0><code class=language-smithy data-lang=smithy>// uppercase.smithy
+//
+
+// Tell the code generator how to reference symbols defined in this namespace
+metadata package = [ { namespace: &#34;com.oneitfarm.wasm.uppercase&#34;, crate: &#34;uppercase&#34; } ]
+
+namespace com.oneitfarm.wasm.uppercase
+
+use org.wasmcloud.model#wasmbus
+
+/// Description of Uppercase service
+@wasmbus( actorReceive: true )
+
+service Uppercase {
+  version: &#34;0.1&#34;,
+  operations: [ Upper ]
+}
+
+/// Uppercase - Execute transaction
+operation Upper {
+    input: UppercaseRequest,
+    output: UppercaseResponse,
+}
+
+/// Parameters sent for Uppercase
+structure UppercaseRequest {
+    /// data to be Uppercased
+    @required
+    data: String,
+}
+
+/// Response to Uppercase
+structure UppercaseResponse {
+    /// Indicates a successful request
+    @required
+    success: Boolean,
+
+    /// response data
+    data: String,
+}
+</code></pre><p>通过模板生成的项目，在默认情况下，仅会生成rust的sdk，如果希望同时创建tinygo的sdk，需要修改codegen.toml文件，添加以下内容</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-toml data-lang=toml><span style=display:flex><span>[tinygo]
+</span></span><span style=display:flex><span>formatter = [ <span style=color:#f1fa8c>&#34;goimports&#34;</span>, <span style=color:#f1fa8c>&#34;-w&#34;</span> ]
+</span></span><span style=display:flex><span>output_dir = <span style=color:#f1fa8c>&#34;tinygo&#34;</span>
+</span></span><span style=display:flex><span>files = [
+</span></span><span style=display:flex><span>    { path = <span style=color:#f1fa8c>&#34;uppercase.go&#34;</span>, package=<span style=color:#f1fa8c>&#34;uppercase&#34;</span>, namespace = <span style=color:#f1fa8c>&#34;com.oneitfarm.wasm.uppercase&#34;</span> },
+</span></span><span style=display:flex><span>]
+</span></span></code></pre></div><p>最后让我们来生成代码！</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>cd</span> uppercase
+</span></span><span style=display:flex><span>wash gen
+</span></span></code></pre></div><h4 id=rust-actor-代码>Rust actor 代码</h4><p>修改actor-server和actor-client的Cargo.toml,在dependencies下增加uppercase = { path="../uppercase/rust" }</p><h5 id=actor-client>actor-client</h5><p>actor client作为actor call actor的client，向actor server发起uppercase的请求。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> provider <span style=color:#ff79c6>=</span> UppercaseSender::to_actor(<span style=color:#f1fa8c>&#34;MBVITL2QJQ42KDTVVQJ2WZM6K3BMZ2CVJXLFYYQKYCLEPS5R5WOUKXIU&#34;</span>);
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> res <span style=color:#ff79c6>=</span> provider.upper(_ctx, <span style=color:#ff79c6>&amp;</span>UppercaseRequest{ data: <span style=color:#50fa7b>text</span> }).<span style=color:#ff79c6>await</span><span style=color:#ff79c6>?</span>;
+</span></span></code></pre></div><h5 id=actor-server>actor-server</h5><p>首先#[services]中需要加入trait名字Uppercase，然后Actor需要实现Uppercase trait，也就是upper方法。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#ff79c6>use</span> uppercase::<span style=color:#ff79c6>*</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>#[derive(Debug, Default, Actor, HealthResponder)]</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>#[services(Actor, Uppercase)]</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>struct</span> <span style=color:#50fa7b>ActorServerActor</span> {}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#f1fa8c>/// Implementation of HttpServer trait methods
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span><span style=color:#ff79c6>#[async_trait]</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>impl</span> Uppercase <span style=color:#ff79c6>for</span> ActorServerActor {
+</span></span><span style=display:flex><span>    <span style=color:#f1fa8c>/// Returns a uppercase string in the response body.
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>    <span style=color:#ff79c6>async</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>upper</span>(<span style=color:#ff79c6>&amp;</span>self, ctx: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>Context</span>, arg: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>UppercaseRequest</span>) -&gt; <span style=color:#50fa7b>RpcResult</span><span style=color:#ff79c6>&lt;</span>UppercaseResponse<span style=color:#ff79c6>&gt;</span> {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>return</span> RpcResult::<span style=color:#8be9fd;font-style:italic>Ok</span>(UppercaseResponse{ data: <span style=color:#8be9fd;font-style:italic>Some</span>(arg.data.to_uppercase()), success: <span style=color:#50fa7b>true</span> })
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=go-actor-代码>Go actor 代码</h4><p>在运行<code>wash gen</code>命令生成Go语言SDK之后，我们需要对它进行初始化。go mod init <code>package</code>中的package可以换成任意你想用的，只要在引入的时候保持就可以。</p><pre tabindex=0><code>cd uppercase/tinygo
+go mod init github.com/oneitfarm/uppercase
+go mod tidy
+</code></pre><h4 id=go代码修改>Go代码修改</h4><p>对server和client项目增加SDK依赖，由于我没有真正的将uppercase上传为一个github项目，所以在引入时我采用了替换为本地相对路径的方式，在go mod中增加以下两行。你可以根据你的需要在符合go mod的约束条件下任意修改。</p><pre tabindex=0><code>require github.com/oneitfarm/uppercase v0.0.0
+
+replace github.com/oneitfarm/uppercase =&gt; ../uppercase/tinygo
+</code></pre><h5 id=go-actor-client-代码修改>go-actor-client 代码修改</h5><p>注意每个人编译的actor server的id可能是不一样的，你在构建actor sender实例的时候需要填写自己的id，当然你也可以使用call alias：<code>oneitfarm/actor_server</code>，在实际代码示例中我们将使用call alias。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (e <span style=color:#ff79c6>*</span>ActorClientGo) <span style=color:#50fa7b>HandleRequest</span>(ctx <span style=color:#ff79c6>*</span>actor.Context, req httpserver.HttpRequest) (<span style=color:#ff79c6>*</span>httpserver.HttpResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	provider <span style=color:#ff79c6>:=</span> uppercase.<span style=color:#50fa7b>NewActorUppercaseSender</span>(<span style=color:#f1fa8c>&#34;MA232W2RTI4GC7A645VJKK3GI7X54XOJR2KNDKEGAMISVN7OQOG55VOC&#34;</span>)
+</span></span><span style=display:flex><span>	res, err <span style=color:#ff79c6>:=</span> provider.<span style=color:#50fa7b>Upper</span>(ctx, uppercase.UppercaseRequest{
+</span></span><span style=display:flex><span>		Data: <span style=color:#8be9fd;font-style:italic>string</span>(req.Body),
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>httpserver.HttpResponse{
+</span></span><span style=display:flex><span>			StatusCode: <span style=color:#bd93f9>500</span>,
+</span></span><span style=display:flex><span>			Header:     <span style=color:#8be9fd;font-style:italic>make</span>(httpserver.HeaderMap, <span style=color:#bd93f9>0</span>),
+</span></span><span style=display:flex><span>			Body:       []<span style=color:#8be9fd;font-style:italic>byte</span>(err.<span style=color:#50fa7b>Error</span>()),
+</span></span><span style=display:flex><span>		}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	r <span style=color:#ff79c6>:=</span> httpserver.HttpResponse{
+</span></span><span style=display:flex><span>		StatusCode: <span style=color:#bd93f9>200</span>,
+</span></span><span style=display:flex><span>		Header:     <span style=color:#8be9fd;font-style:italic>make</span>(httpserver.HeaderMap, <span style=color:#bd93f9>0</span>),
+</span></span><span style=display:flex><span>		Body:       []<span style=color:#8be9fd;font-style:italic>byte</span>(res.Data),
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>r, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=go-actor-server-代码>go-actor-server 代码</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	me <span style=color:#ff79c6>:=</span> ActorServerGo{}
+</span></span><span style=display:flex><span>	actor.<span style=color:#50fa7b>RegisterHandlers</span>(uppercase.<span style=color:#50fa7b>UppercaseHandler</span>(<span style=color:#ff79c6>&amp;</span>me))
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> ActorServerGo <span style=color:#8be9fd;font-style:italic>struct</span>{}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (e <span style=color:#ff79c6>*</span>ActorServerGo) <span style=color:#50fa7b>Upper</span>(ctx <span style=color:#ff79c6>*</span>actor.Context, req uppercase.UppercaseRequest) (<span style=color:#ff79c6>*</span>uppercase.UppercaseResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	r <span style=color:#ff79c6>:=</span> uppercase.UppercaseResponse{
+</span></span><span style=display:flex><span>		Data: strings.<span style=color:#50fa7b>ToUpper</span>(req.Data),
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>r, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=call-alias调用别名介绍>Call alias（调用别名）介绍</h4><p>通过上面的例子可以看出来通过id来调用actor非常不方便，所以可以通过call 别名的方式。通过wasmcloud文档我们可以得知，设置别名需要在claim sign的时候增加<code>call-alias</code>flag。由于call alias是其他actor调用自己的时候的别名，因此只需要针对actor server设置就可以了。</p><p>对于go代码来说，在actor-server-go项目的Makefile中添加一行<code>ACTOR_ALIAS = oneitfarm/actor_server</code>.然后actor-client-go项目中的调用就可以改为 <code>provider := uppercase.NewActorUppercaseSender("oneitfarm/actor_server_go")</code>了。</p><p>对于rust代码来说是同样的，在actor-server项目的Makefile中增加一行：<code>ACTOR_ALIAS = oneitfarm/actor_server</code>即可。</p><h5 id=别名规则>别名规则</h5><p>可以包含小写字母、数字、<code>/</code>和<code>_</code>。</p><h3 id=注意>注意！</h3><p>operation和service不能重名！！！否则生成的代码会有异常。比如如果将interface中的smithy文件中的operation定义为Uppercase就会出问题。初步追踪了一下，应该是在解析smithy格式文件的时候，有一个步骤使用了以名字为key的扁平结构，造成内容混乱的问题。</p><pre tabindex=0><code>/// ...
+
+service Uppercase {
+  version: &#34;0.1&#34;,
+  operations: [ Uppercase ]
+}
+
+/// Uppercase - Execute transaction
+operation Uppercase {
+    input: UppercaseRequest,
+    output: UppercaseResponse,
+}
+
+/// ...
+</code></pre><hr><ul class=pager><li class=previous><a href=/2021/12/18/2021-12-18-dco-rebase.md/ data-toggle=tooltip data-placement=top title=使用rebase对提交进行DCO签名>&larr;
+Previous Post</a></li><li class=next><a href=/2022/11/22/2022-11-22-dapr-provider.md/ data-toggle=tooltip data-placement=top title="Dapr Wasmcloud Provider">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

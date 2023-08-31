@@ -1,0 +1,381 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Spin up 源码分析"><meta property="og:title" content="Spin up 源码分析"><meta property="twitter:title" content="Spin up 源码分析"><meta name=description content="通过之前文章，大概对fermyon平台架构有了了解。我们知道通过`spin up [-f path/to/spin.toml]`命令可以“启动”一个wasm程序，但是在这个过程中实际执行的代码逻辑是什么？我们的网络请求发给了谁，如何传递到wasm程序的？接下来从实际的代码执行角度来看下这个过程中的实际代码逻辑。实际上这里大概分为了两个大步骤，spin up命令对参数进行解析，根据启动时指定的是file（默认）还是bindle来进行不同的数据解析准备，最终通过spin trigger命令来进行实际动作。（从这个角度来看spin up就是为了方便命令行使用的用户友好的封装）"><meta property="og:description" content="通过之前文章，大概对fermyon平台架构有了了解。我们知道通过`spin up [-f path/to/spin.toml]`命令可以“启动”一个wasm程序，但是在这个过程中实际执行的代码逻辑是什么？我们的网络请求发给了谁，如何传递到wasm程序的？接下来从实际的代码执行角度来看下这个过程中的实际代码逻辑。实际上这里大概分为了两个大步骤，spin up命令对参数进行解析，根据启动时指定的是file（默认）还是bindle来进行不同的数据解析准备，最终通过spin trigger命令来进行实际动作。（从这个角度来看spin up就是为了方便命令行使用的用户友好的封装）"><meta property="twitter:description" content="通过之前文章，大概对fermyon平台架构有了了解。我们知道通过`spin up [-f path/to/spin.toml]`命令可以“启动”一个wasm程序，但是在这个过程中实际执行的代码逻辑是什么？我们的网络请求发给了谁，如何传递到wasm程序的？接下来从实际的代码执行角度来看下这个过程中的实际代码逻辑。实际上这里大概分为了两个大步骤，spin up命令对参数进行解析，根据启动时指定的是file（默认）还是bindle来进行不同的数据解析准备，最终通过spin trigger命令来进行实际动作。（从这个角度来看spin up就是为了方便命令行使用的用户友好的封装）"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Spin up 源码分析 | 张超的博客 | Taction Blog</title><link rel=canonical href=/2023/02/11/2023-02-11-spin-up-sourcecode.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/spin title=spin>spin</a></div><h1>Spin up 源码分析</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Saturday, February 11, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h3 id=简介>简介</h3><p>通过之前文章，大概对fermyon平台架构有了了解。我们知道通过<code>spin up [-f path/to/spin.toml]</code>命令可以“启动”一个wasm程序，但是在这个过程中实际执行的代码逻辑是什么？我们的网络请求发给了谁，如何传递到wasm程序的？接下来从实际的代码执行角度来看下这个过程中的实际代码逻辑。实际上这里大概分为了两个大步骤，spin up命令对参数进行解析，根据启动时指定的是file（默认）还是bindle来进行不同的数据解析准备，最终通过spin trigger命令来进行实际动作。（从这个角度来看spin up就是为了方便命令行使用的用户友好的封装）</p><h3 id=代码>代码</h3><p>对于命令的封装spin使用了clap库，这里不对这个库的使用做介绍，也就是后面代码分析的起点是命令所执行的业务函数开始，也就是每个命令对应的run函数。命令解析和参数绑定部分会被忽略。</p><h4 id=spin-up>spin up</h4><p>spin up命令首先对参数进行解析，&ndash;file对应app有值，&ndash;bindle对应bindle有值，走不同的分支预处理：其实就是把配置读取进来，如果都定义了就报错只能定义一个。这里注意up command会记录下来所有不认识的flag，当启动trigger的时候把这些参数透传下去给trigger用。然后准备环境变量和启动参数数据，通过spin trigger命令来启动一个子进程来进行处理，并监听退出信息退出子进程。相对来说逻辑比较简单。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#ff79c6>async</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>run_inner</span>(self) -&gt; <span style=color:#8be9fd;font-style:italic>Result</span><span style=color:#ff79c6>&lt;</span>()<span style=color:#ff79c6>&gt;</span> {
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> working_dir_holder <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>match</span> <span style=color:#ff79c6>&amp;</span>self.tmp {
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>None</span> <span style=color:#ff79c6>=&gt;</span> WorkingDirectory::Temporary(tempfile::tempdir()<span style=color:#ff79c6>?</span>),
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Some</span>(d) <span style=color:#ff79c6>=&gt;</span> WorkingDirectory::Given(d.to_owned()),
+</span></span><span style=display:flex><span>    };
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> working_dir <span style=color:#ff79c6>=</span> working_dir_holder.path().canonicalize()<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 判断是file（app）还是bindle，对配置进行解析
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> app <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>match</span> (<span style=color:#ff79c6>&amp;</span>self.app, <span style=color:#ff79c6>&amp;</span>self.bindle) {
+</span></span><span style=display:flex><span>        (app, <span style=color:#8be9fd;font-style:italic>None</span>) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>let</span> manifest_file <span style=color:#ff79c6>=</span> app
+</span></span><span style=display:flex><span>                .as_deref()
+</span></span><span style=display:flex><span>                .unwrap_or_else(<span style=color:#ff79c6>||</span> DEFAULT_MANIFEST_FILE.as_ref());
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>let</span> bindle_connection <span style=color:#ff79c6>=</span> self.bindle_connection();
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>let</span> asset_dst <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>if</span> self.direct_mounts {
+</span></span><span style=display:flex><span>                <span style=color:#8be9fd;font-style:italic>None</span>
+</span></span><span style=display:flex><span>            } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>                <span style=color:#8be9fd;font-style:italic>Some</span>(<span style=color:#ff79c6>&amp;</span>working_dir)
+</span></span><span style=display:flex><span>            };
+</span></span><span style=display:flex><span>            spin_loader::from_file(manifest_file, asset_dst, <span style=color:#ff79c6>&amp;</span>bindle_connection).<span style=color:#ff79c6>await</span><span style=color:#ff79c6>?</span>
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        (<span style=color:#8be9fd;font-style:italic>None</span>, <span style=color:#8be9fd;font-style:italic>Some</span>(bindle)) <span style=color:#ff79c6>=&gt;</span> <span style=color:#ff79c6>match</span> <span style=color:#ff79c6>&amp;</span>self.server {
+</span></span><span style=display:flex><span>            <span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        },
+</span></span><span style=display:flex><span>        (<span style=color:#8be9fd;font-style:italic>Some</span>(_), <span style=color:#8be9fd;font-style:italic>Some</span>(_)) <span style=color:#ff79c6>=&gt;</span> bail!(<span style=color:#f1fa8c>&#34;Specify only one of app file or bindle ID&#34;</span>),
+</span></span><span style=display:flex><span>    };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 判断trigger是http、redis还是自定义
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#8be9fd;font-style:italic>let</span> trigger_type <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>match</span> <span style=color:#ff79c6>&amp;</span>app.info.trigger {
+</span></span><span style=display:flex><span>        ApplicationTrigger::Http(_) <span style=color:#ff79c6>=&gt;</span> vec![<span style=color:#f1fa8c>&#34;trigger&#34;</span>.to_owned(), <span style=color:#f1fa8c>&#34;http&#34;</span>.to_owned()],
+</span></span><span style=display:flex><span>        ApplicationTrigger::Redis(_) <span style=color:#ff79c6>=&gt;</span> vec![<span style=color:#f1fa8c>&#34;trigger&#34;</span>.to_owned(), <span style=color:#f1fa8c>&#34;redis&#34;</span>.to_owned()],
+</span></span><span style=display:flex><span>        ApplicationTrigger::External(cfg) <span style=color:#ff79c6>=&gt;</span> vec![resolve_trigger_plugin(cfg.trigger_type())<span style=color:#ff79c6>?</span>],
+</span></span><span style=display:flex><span>    };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 这里就是准备启动另一个spin进行来实际处理，准备环境变量和命令参数，对于httptrigger就是 spin trigger http。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#6272a4>// The docs for `current_exe` warn that this may be insecure because it could be executed
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#6272a4>// via hard-link. I think it should be fine as long as we aren&#39;t `setuid`ing this binary.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> cmd <span style=color:#ff79c6>=</span> std::process::Command::new(std::env::current_exe().unwrap());
+</span></span><span style=display:flex><span>    cmd.args(<span style=color:#ff79c6>&amp;</span>trigger_type).env(SPIN_WORKING_DIR, <span style=color:#ff79c6>&amp;</span>working_dir);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>if</span> self.help {
+</span></span><span style=display:flex><span>        cmd.arg(<span style=color:#f1fa8c>&#34;--help-args-only&#34;</span>);
+</span></span><span style=display:flex><span>    } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>        <span style=color:#6272a4>// 将配置写进SPIN_LOCKED_URL对应的文件，并设置这个环境变量
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        <span style=color:#8be9fd;font-style:italic>let</span> locked_url <span style=color:#ff79c6>=</span> self.write_locked_app(app, <span style=color:#ff79c6>&amp;</span>working_dir)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>        cmd.env(SPIN_LOCKED_URL, locked_url)
+</span></span><span style=display:flex><span>            .args(<span style=color:#ff79c6>&amp;</span>self.trigger_args);
+</span></span><span style=display:flex><span>    };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 启动子进程
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> child <span style=color:#ff79c6>=</span> cmd.spawn().context(<span style=color:#f1fa8c>&#34;Failed to execute trigger&#34;</span>)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 接下来就是等待退出命令好退出子进程，并等待子进程结束
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span></code></pre></div><p>先来看下一个在启动子进程的时候，除了http和redis还有一个<code>External</code>的方式，通过查看代码，这里的子命令会是 spin &ldquo;trigger-{trigger_type}"，在组装命令时会检查"trigger-{trigger_type}&ldquo;对应的plugin是否已经安装，如果没有安装会从built-in（内置）列表中找，如果还没有就报错。关键查找函数</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>resolve_trigger_plugin</span>(trigger_type: <span style=color:#ff79c6>&amp;</span><span style=color:#8be9fd>str</span>) -&gt; <span style=color:#8be9fd;font-style:italic>Result</span><span style=color:#ff79c6>&lt;</span><span style=color:#8be9fd;font-style:italic>String</span><span style=color:#ff79c6>&gt;</span> {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>use</span> <span style=color:#ff79c6>crate</span>::commands::plugins::PluginCompatibility;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>use</span> spin_plugins::manager::PluginManager;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> subcommand <span style=color:#ff79c6>=</span> format!(<span style=color:#f1fa8c>&#34;trigger-</span><span style=color:#f1fa8c>{trigger_type}</span><span style=color:#f1fa8c>&#34;</span>);
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> plugin_manager <span style=color:#ff79c6>=</span> PluginManager::try_default()
+</span></span><span style=display:flex><span>        .with_context(<span style=color:#ff79c6>||</span> format!(<span style=color:#f1fa8c>&#34;Failed to access plugins looking for &#39;</span><span style=color:#f1fa8c>{subcommand}</span><span style=color:#f1fa8c>&#39;&#34;</span>))<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> plugin_store <span style=color:#ff79c6>=</span> plugin_manager.store();
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> is_installed <span style=color:#ff79c6>=</span> plugin_store
+</span></span><span style=display:flex><span>        .installed_manifests()
+</span></span><span style=display:flex><span>        .unwrap_or_default()
+</span></span><span style=display:flex><span>        .iter()
+</span></span><span style=display:flex><span>        .any(<span style=color:#ff79c6>|</span>m<span style=color:#ff79c6>|</span> m.name() <span style=color:#ff79c6>==</span> subcommand);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>if</span> is_installed {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>Ok</span>(subcommand);
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#8be9fd;font-style:italic>Some</span>(known) <span style=color:#ff79c6>=</span> plugin_store
+</span></span><span style=display:flex><span>        .catalogue_manifests()
+</span></span><span style=display:flex><span>        .unwrap_or_default()
+</span></span><span style=display:flex><span>        .iter()
+</span></span><span style=display:flex><span>        .find(<span style=color:#ff79c6>|</span>m<span style=color:#ff79c6>|</span> m.name() <span style=color:#ff79c6>==</span> subcommand)
+</span></span><span style=display:flex><span>    {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>match</span> PluginCompatibility::for_current(known) {
+</span></span><span style=display:flex><span>            PluginCompatibility::Compatible <span style=color:#ff79c6>=&gt;</span> <span style=color:#8be9fd;font-style:italic>Err</span>(anyhow!(<span style=color:#f1fa8c>&#34;No built-in trigger named &#39;{trigger_type}&#39;, but plugin &#39;{subcommand}&#39; is available to install&#34;</span>)),
+</span></span><span style=display:flex><span>            _ <span style=color:#ff79c6>=&gt;</span> <span style=color:#8be9fd;font-style:italic>Err</span>(anyhow!(<span style=color:#f1fa8c>&#34;No built-in trigger named &#39;{trigger_type}&#39;, and plugin &#39;{subcommand}&#39; is not compatible&#34;</span>))
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Err</span>(anyhow!(<span style=color:#f1fa8c>&#34;No built-in trigger named &#39;{trigger_type}&#39;, and no plugin named &#39;{subcommand}&#39; was found&#34;</span>))
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=spin-trigger>spin trigger</h4><p>通过上面的分析可以看出，在设置好环境变量，创建了对应的lock配置文件情况下，完全可以通过spin trigger命令达到同样的效果。对于http和redis两种trigger来说，spin会执行不同的逻辑代码，但是整体都是一样的，启动trigger（http server或者连接redis），在有对应的信号的时候，调用wasm程序，返回处理结果。</p><p>通过查看spin的命令，可以发现，trigger命令下目前只有http和redis。接下来就以http trigger为例来介绍具体的处理逻辑。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#f1fa8c>/// The Spin CLI
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span><span style=color:#ff79c6>#[derive(Parser)]</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>#[clap(
+</span></span></span><span style=display:flex><span><span style=color:#ff79c6>    name = </span><span style=color:#f1fa8c>&#34;spin&#34;</span><span style=color:#ff79c6>,
+</span></span></span><span style=display:flex><span><span style=color:#ff79c6>    version = version(),
+</span></span></span><span style=display:flex><span><span style=color:#ff79c6>)]</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>enum</span> <span style=color:#50fa7b>SpinApp</span> {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#ff79c6>#[clap(subcommand, hide = true)]</span>
+</span></span><span style=display:flex><span>    Trigger(TriggerCommands),
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>#[clap(external_subcommand)]</span>
+</span></span><span style=display:flex><span>    External(<span style=color:#8be9fd;font-style:italic>Vec</span><span style=color:#ff79c6>&lt;</span><span style=color:#8be9fd;font-style:italic>String</span><span style=color:#ff79c6>&gt;</span>),
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// 可以看到trigger下只有http和redis两个子命令
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#ff79c6>#[derive(Subcommand)]</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>enum</span> <span style=color:#50fa7b>TriggerCommands</span> {
+</span></span><span style=display:flex><span>    Http(TriggerExecutorCommand<span style=color:#ff79c6>&lt;</span>HttpTrigger<span style=color:#ff79c6>&gt;</span>),
+</span></span><span style=display:flex><span>    Redis(TriggerExecutorCommand<span style=color:#ff79c6>&lt;</span>RedisTrigger<span style=color:#ff79c6>&gt;</span>),
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>接下来查看下http trigger源码，先解析传递来的两个环境变量SPIN_WORKING_DIR和SPIN_LOCKED_URL，其中SPIN_LOCKED_URL指向包含配置的文件或地址，具体文件内容实例附在了最后。先将app信息从lock文件中读取解析完毕，后面的逻辑就比较简单，解析监听地址及tls信息，启动server。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#f1fa8c>/// Create a new TriggerExecutorBuilder from this TriggerExecutorCommand.
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span><span style=color:#ff79c6>pub</span> <span style=color:#ff79c6>async</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>run</span>(self) -&gt; <span style=color:#8be9fd;font-style:italic>Result</span><span style=color:#ff79c6>&lt;</span>()<span style=color:#ff79c6>&gt;</span> {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>if</span> self.help_args_only {
+</span></span><span style=display:flex><span>        Self::command()
+</span></span><span style=display:flex><span>            .disable_help_flag(<span style=color:#ff79c6>true</span>)
+</span></span><span style=display:flex><span>            .help_template(<span style=color:#f1fa8c>&#34;{all-args}&#34;</span>)
+</span></span><span style=display:flex><span>            .print_long_help()<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>Ok</span>(());
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// Required env vars
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#8be9fd;font-style:italic>let</span> working_dir <span style=color:#ff79c6>=</span> std::env::var(SPIN_WORKING_DIR).context(SPIN_WORKING_DIR)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> locked_url <span style=color:#ff79c6>=</span> std::env::var(SPIN_LOCKED_URL).context(SPIN_LOCKED_URL)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> loader <span style=color:#ff79c6>=</span> TriggerLoader::new(working_dir, self.allow_transient_write);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> trigger_config <span style=color:#ff79c6>=</span>
+</span></span><span style=display:flex><span>        TriggerExecutorBuilderConfig::load_from_file(self.runtime_config_file.clone())<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> executor: <span style=color:#50fa7b>Executor</span> <span style=color:#ff79c6>=</span> {
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> _sloth_warning <span style=color:#ff79c6>=</span> warn_if_wasm_build_slothful();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> builder <span style=color:#ff79c6>=</span> TriggerExecutorBuilder::new(loader);
+</span></span><span style=display:flex><span>        self.update_wasmtime_config(builder.wasmtime_config_mut())<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> logging_hooks <span style=color:#ff79c6>=</span> StdioLoggingTriggerHooks::new(self.follow_components(), self.log);
+</span></span><span style=display:flex><span>        builder.hooks(logging_hooks);
+</span></span><span style=display:flex><span>				<span style=color:#6272a4>// 在这一步会解析配置，并将components下的source下的定义的wasm从文件中读入内存，同时对wasm有很多预处理也是在这个函数中完成的，解析wasm程序到Module、校验、linker以及创建一个`InstancePre`，简单来说就是实例化一个wasm之前的步骤这里都做完了，这个工作只需要做一次，后面来请求的时候就实例化wasm就行。这里的处理涉及到一些wasmtime对wasm处理，就不进一步贴详细代码了，通过代码来看目前spin只支持wasmtime引擎。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        builder.build(locked_url, trigger_config).<span style=color:#ff79c6>await</span><span style=color:#ff79c6>?</span>
+</span></span><span style=display:flex><span>    };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> run_fut <span style=color:#ff79c6>=</span> executor.run(self.run_config);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> (abortable, abort_handle) <span style=color:#ff79c6>=</span> futures::future::abortable(run_fut);
+</span></span><span style=display:flex><span>    ctrlc::set_handler(<span style=color:#ff79c6>move</span> <span style=color:#ff79c6>||</span> abort_handle.abort())<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>match</span> abortable.<span style=color:#ff79c6>await</span> {
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Ok</span>(<span style=color:#8be9fd;font-style:italic>Ok</span>(())) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>            tracing::info!(<span style=color:#f1fa8c>&#34;Trigger executor shut down: exiting&#34;</span>);
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>Ok</span>(())
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Ok</span>(<span style=color:#8be9fd;font-style:italic>Err</span>(err)) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>            tracing::error!(<span style=color:#f1fa8c>&#34;Trigger executor failed&#34;</span>);
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>Err</span>(err)
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Err</span>(_aborted) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>            tracing::info!(<span style=color:#f1fa8c>&#34;User requested shutdown: exiting&#34;</span>);
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>Ok</span>(())
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>然后经过系列模板代码之后会转到处理函数，这个函数做的事情也很简单，根据路径去router中查找component类型，转入对应的处理：组装数据，实例化wasm，执行wasm对应的函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#ff79c6>pub</span> <span style=color:#ff79c6>async</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>handle</span>(
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>&amp;</span>self,
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>mut</span> req: <span style=color:#50fa7b>Request</span><span style=color:#ff79c6>&lt;</span>Body<span style=color:#ff79c6>&gt;</span>,
+</span></span><span style=display:flex><span>    scheme: <span style=color:#50fa7b>Scheme</span>,
+</span></span><span style=display:flex><span>    addr: <span style=color:#50fa7b>SocketAddr</span>,
+</span></span><span style=display:flex><span>) -&gt; <span style=color:#8be9fd;font-style:italic>Result</span><span style=color:#ff79c6>&lt;</span>Response<span style=color:#ff79c6>&lt;</span>Body<span style=color:#ff79c6>&gt;&gt;</span> {
+</span></span><span style=display:flex><span>    set_req_uri(<span style=color:#ff79c6>&amp;</span><span style=color:#ff79c6>mut</span> req, scheme)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    log::info!(
+</span></span><span style=display:flex><span>        <span style=color:#f1fa8c>&#34;Processing request for application {} on URI {}&#34;</span>,
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&amp;</span>self.engine.app_name,
+</span></span><span style=display:flex><span>        req.uri()
+</span></span><span style=display:flex><span>    );
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#8be9fd;font-style:italic>let</span> path <span style=color:#ff79c6>=</span> req.uri().path();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// Handle well-known spin paths
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#8be9fd;font-style:italic>Some</span>(well_known) <span style=color:#ff79c6>=</span> path.strip_prefix(WELL_KNOWN_PREFIX) {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>match</span> well_known {
+</span></span><span style=display:flex><span>            <span style=color:#f1fa8c>&#34;health&#34;</span> <span style=color:#ff79c6>=&gt;</span> <span style=color:#8be9fd;font-style:italic>Ok</span>(Response::new(Body::from(<span style=color:#f1fa8c>&#34;OK&#34;</span>))),
+</span></span><span style=display:flex><span>            <span style=color:#f1fa8c>&#34;info&#34;</span> <span style=color:#ff79c6>=&gt;</span> self.app_info(),
+</span></span><span style=display:flex><span>            _ <span style=color:#ff79c6>=&gt;</span> Self::not_found(),
+</span></span><span style=display:flex><span>        };
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// Route to app component
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#ff79c6>match</span> self.router.route(path) {
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Ok</span>(component_id) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>let</span> trigger <span style=color:#ff79c6>=</span> self.component_trigger_configs.get(component_id).unwrap();
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>let</span> executor <span style=color:#ff79c6>=</span> trigger.executor.as_ref().unwrap_or(<span style=color:#ff79c6>&amp;</span>HttpExecutorType::Spin);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>let</span> res <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>match</span> executor {
+</span></span><span style=display:flex><span>                HttpExecutorType::Spin <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>                    <span style=color:#8be9fd;font-style:italic>let</span> executor <span style=color:#ff79c6>=</span> SpinHttpExecutor;
+</span></span><span style=display:flex><span>                    executor
+</span></span><span style=display:flex><span>                        .execute(
+</span></span><span style=display:flex><span>                            <span style=color:#ff79c6>&amp;</span>self.engine,
+</span></span><span style=display:flex><span>                            component_id,
+</span></span><span style=display:flex><span>                            <span style=color:#ff79c6>&amp;</span>self.base,
+</span></span><span style=display:flex><span>                            <span style=color:#ff79c6>&amp;</span>trigger.route,
+</span></span><span style=display:flex><span>                            req,
+</span></span><span style=display:flex><span>                            addr,
+</span></span><span style=display:flex><span>                        )
+</span></span><span style=display:flex><span>                        .<span style=color:#ff79c6>await</span>
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>                HttpExecutorType::Wagi(wagi_config) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>                    <span style=color:#8be9fd;font-style:italic>let</span> executor <span style=color:#ff79c6>=</span> WagiHttpExecutor {
+</span></span><span style=display:flex><span>                        wagi_config: <span style=color:#50fa7b>wagi_config</span>.clone(),
+</span></span><span style=display:flex><span>                    };
+</span></span><span style=display:flex><span>                    executor
+</span></span><span style=display:flex><span>                        .execute(
+</span></span><span style=display:flex><span>                            <span style=color:#ff79c6>&amp;</span>self.engine,
+</span></span><span style=display:flex><span>                            component_id,
+</span></span><span style=display:flex><span>                            <span style=color:#ff79c6>&amp;</span>self.base,
+</span></span><span style=display:flex><span>                            <span style=color:#ff79c6>&amp;</span>trigger.route,
+</span></span><span style=display:flex><span>                            req,
+</span></span><span style=display:flex><span>                            addr,
+</span></span><span style=display:flex><span>                        )
+</span></span><span style=display:flex><span>                        .<span style=color:#ff79c6>await</span>
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>            };
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>match</span> res {
+</span></span><span style=display:flex><span>                <span style=color:#8be9fd;font-style:italic>Ok</span>(res) <span style=color:#ff79c6>=&gt;</span> <span style=color:#8be9fd;font-style:italic>Ok</span>(res),
+</span></span><span style=display:flex><span>                <span style=color:#8be9fd;font-style:italic>Err</span>(e) <span style=color:#ff79c6>=&gt;</span> {
+</span></span><span style=display:flex><span>                    log::error!(<span style=color:#f1fa8c>&#34;Error processing request: {:?}&#34;</span>, e);
+</span></span><span style=display:flex><span>                    Self::internal_error(<span style=color:#8be9fd;font-style:italic>None</span>)
+</span></span><span style=display:flex><span>                }
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Err</span>(_) <span style=color:#ff79c6>=&gt;</span> Self::not_found(),
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>executor.execute</code>经过一系列封装会调用wasmtime的<code>instantiate_async</code>来实例化wasm程序，然后调用wasm的函数，这里通过execute_impl函数包装了一下。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#ff79c6>impl</span> HttpExecutor <span style=color:#ff79c6>for</span> SpinHttpExecutor {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>async</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>execute</span>(
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&amp;</span>self,
+</span></span><span style=display:flex><span>        engine: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>TriggerAppEngine</span><span style=color:#ff79c6>&lt;</span>HttpTrigger<span style=color:#ff79c6>&gt;</span>,
+</span></span><span style=display:flex><span>        component_id: <span style=color:#ff79c6>&amp;</span><span style=color:#8be9fd>str</span>,
+</span></span><span style=display:flex><span>        base: <span style=color:#ff79c6>&amp;</span><span style=color:#8be9fd>str</span>,
+</span></span><span style=display:flex><span>        raw_route: <span style=color:#ff79c6>&amp;</span><span style=color:#8be9fd>str</span>,
+</span></span><span style=display:flex><span>        req: <span style=color:#50fa7b>Request</span><span style=color:#ff79c6>&lt;</span>Body<span style=color:#ff79c6>&gt;</span>,
+</span></span><span style=display:flex><span>        _client_addr: <span style=color:#50fa7b>SocketAddr</span>,
+</span></span><span style=display:flex><span>    ) -&gt; <span style=color:#8be9fd;font-style:italic>Result</span><span style=color:#ff79c6>&lt;</span>Response<span style=color:#ff79c6>&lt;</span>Body<span style=color:#ff79c6>&gt;&gt;</span> {
+</span></span><span style=display:flex><span>        tracing::trace!(
+</span></span><span style=display:flex><span>            <span style=color:#f1fa8c>&#34;Executing request using the Spin executor for component {}&#34;</span>,
+</span></span><span style=display:flex><span>            component_id
+</span></span><span style=display:flex><span>        );
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> (instance, store) <span style=color:#ff79c6>=</span> engine.prepare_instance(component_id).<span style=color:#ff79c6>await</span><span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> resp <span style=color:#ff79c6>=</span> Self::execute_impl(store, instance, base, raw_route, req)
+</span></span><span style=display:flex><span>            .<span style=color:#ff79c6>await</span>
+</span></span><span style=display:flex><span>            .map_err(contextualise_err)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        tracing::info!(
+</span></span><span style=display:flex><span>            <span style=color:#f1fa8c>&#34;Request finished, sending response with status code {}&#34;</span>,
+</span></span><span style=display:flex><span>            resp.status()
+</span></span><span style=display:flex><span>        );
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Ok</span>(resp)
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>execute_impl</code>函数就是数据格式转化+调用wasm的handle_http_request的函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#ff79c6>impl</span> SpinHttpExecutor {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>pub</span> <span style=color:#ff79c6>async</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>execute_impl</span>(
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>mut</span> store: <span style=color:#50fa7b>Store</span>,
+</span></span><span style=display:flex><span>        instance: <span style=color:#50fa7b>Instance</span>,
+</span></span><span style=display:flex><span>        base: <span style=color:#ff79c6>&amp;</span><span style=color:#8be9fd>str</span>,
+</span></span><span style=display:flex><span>        raw_route: <span style=color:#ff79c6>&amp;</span><span style=color:#8be9fd>str</span>,
+</span></span><span style=display:flex><span>        req: <span style=color:#50fa7b>Request</span><span style=color:#ff79c6>&lt;</span>Body<span style=color:#ff79c6>&gt;</span>,
+</span></span><span style=display:flex><span>    ) -&gt; <span style=color:#8be9fd;font-style:italic>Result</span><span style=color:#ff79c6>&lt;</span>Response<span style=color:#ff79c6>&lt;</span>Body<span style=color:#ff79c6>&gt;&gt;</span> {
+</span></span><span style=display:flex><span>        <span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        <span style=color:#8be9fd;font-style:italic>let</span> http_instance <span style=color:#ff79c6>=</span> SpinHttp::new(<span style=color:#ff79c6>&amp;</span><span style=color:#ff79c6>mut</span> store, <span style=color:#ff79c6>&amp;</span>instance, <span style=color:#ff79c6>|</span>data<span style=color:#ff79c6>|</span> data.as_mut())<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>        <span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        <span style=color:#8be9fd;font-style:italic>let</span> req <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>crate</span>::spin_http::Request {
+</span></span><span style=display:flex><span>            method,
+</span></span><span style=display:flex><span>            uri: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>uri</span>,
+</span></span><span style=display:flex><span>            headers: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>headers</span>,
+</span></span><span style=display:flex><span>            params: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>params</span>,
+</span></span><span style=display:flex><span>            body,
+</span></span><span style=display:flex><span>        };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> resp <span style=color:#ff79c6>=</span> http_instance.handle_http_request(<span style=color:#ff79c6>&amp;</span><span style=color:#ff79c6>mut</span> store, req).<span style=color:#ff79c6>await</span><span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>if</span> resp.status <span style=color:#ff79c6>&lt;</span> <span style=color:#bd93f9>100</span> <span style=color:#ff79c6>||</span> resp.status <span style=color:#ff79c6>&gt;</span> <span style=color:#bd93f9>600</span> {
+</span></span><span style=display:flex><span>            tracing::error!(<span style=color:#f1fa8c>&#34;malformed HTTP status code&#34;</span>);
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>Ok</span>(Response::builder()
+</span></span><span style=display:flex><span>                .status(http::StatusCode::INTERNAL_SERVER_ERROR)
+</span></span><span style=display:flex><span>                .body(Body::empty())<span style=color:#ff79c6>?</span>);
+</span></span><span style=display:flex><span>        };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> response <span style=color:#ff79c6>=</span> http::Response::builder().status(resp.status);
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#8be9fd;font-style:italic>Some</span>(headers) <span style=color:#ff79c6>=</span> response.headers_mut() {
+</span></span><span style=display:flex><span>            Self::append_headers(headers, resp.headers)<span style=color:#ff79c6>?</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> body <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>match</span> resp.body {
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>Some</span>(b) <span style=color:#ff79c6>=&gt;</span> Body::from(b),
+</span></span><span style=display:flex><span>            <span style=color:#8be9fd;font-style:italic>None</span> <span style=color:#ff79c6>=&gt;</span> Body::empty(),
+</span></span><span style=display:flex><span>        };
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>Ok</span>(response.body(body)<span style=color:#ff79c6>?</span>)
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span></code></pre></div><p><code>handle_http_request</code>从哪里来的呢，这个就涉及到rust与wasm交互的一个库<code>wit_bindgen</code>在程序中只是一行代码<code>wit_bindgen_wasmtime::import!({paths: ["../../wit/ephemeral/spin-http.wit"], async: *});</code>这里<code>spin-http.wit</code>文件中定义的就是wasm交互的interface，以下就是这个文件的内容（类型信息被抽取到<code>http-types</code>文件中了，只有类型定义信息这里就不附了，有兴趣的同学可以在源码里看到）。</p><pre tabindex=0><code class=language-wit data-lang=wit>use * from http-types
+
+// The entrypoint for an HTTP handler.
+handle-http-request: func(req: request) -&gt; response
+</code></pre><h3 id=小结>小结</h3><p>使用内置http trigger的方式运行一个wasm程序的源码大致如上所述，这里可以看到spin目前支持http和redis两个内置的wasm程序触发方式，而且仅有这两种方式，用户来自己定义更多的触发方式看起来只能通过<a href=https://developer.fermyon.com/spin/extending-and-embedding>扩展源码</a>。自定义扩展经过后面的js2wasm案例来看的话参与的是编译程序到wasm过程，还有另一个自定义扩展的案例是直接运行wasm程序。spin与wasm程序交互通过wasm component model进行定义，这是一个wasm本身在推进的协议，对于其他语言的支持可以借助社区工具，这就是一个比较大的优势（不过看了下go的sdk，仍然还是要编写一些胶水代码的）。但是同时也由于这是一个WebAssembly的proposal并且处于早期，所以标准落地以及更多语言生态支持应该也会慢一些。所以fermyon还支持了<a href=https://github.com/deislabs/wagi>wagi</a>，一个WebAssembly的<a href=https://datatracker.ietf.org/doc/html/rfc3875>Common Gateway Interface</a>定义（主要用于初期过渡，看文档后期component model生态成熟了会废弃）。</p><h3 id=附>附</h3><p>spin.lock文件内容</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-json data-lang=json><span style=display:flex><span>{
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>&#34;spin_lock_version&#34;</span>: <span style=color:#bd93f9>0</span>,
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>&#34;metadata&#34;</span>: {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>&#34;description&#34;</span>: <span style=color:#f1fa8c>&#34;a spin http handler in go for wasm&#34;</span>,
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>&#34;name&#34;</span>: <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>,
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>&#34;origin&#34;</span>: <span style=color:#f1fa8c>&#34;file:///Users/root/Desktop/Workspace/github/spin/spinhttpgo/spin.toml&#34;</span>,
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>&#34;trigger&#34;</span>: {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;base&#34;</span>: <span style=color:#f1fa8c>&#34;/&#34;</span>,
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;type&#34;</span>: <span style=color:#f1fa8c>&#34;http&#34;</span>
+</span></span><span style=display:flex><span>    },
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>&#34;version&#34;</span>: <span style=color:#f1fa8c>&#34;0.1.0&#34;</span>
+</span></span><span style=display:flex><span>  },
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>&#34;triggers&#34;</span>: [
+</span></span><span style=display:flex><span>    {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;id&#34;</span>: <span style=color:#f1fa8c>&#34;trigger--spinhttpgo&#34;</span>,
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;trigger_type&#34;</span>: <span style=color:#f1fa8c>&#34;http&#34;</span>,
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;trigger_config&#34;</span>: {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&#34;component&#34;</span>: <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>,
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&#34;executor&#34;</span>: <span style=color:#ff79c6>null</span>,
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&#34;route&#34;</span>: <span style=color:#f1fa8c>&#34;/hello&#34;</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>  ],
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>&#34;components&#34;</span>: [
+</span></span><span style=display:flex><span>    {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;id&#34;</span>: <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>,
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;metadata&#34;</span>: {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&#34;allowed_http_hosts&#34;</span>: []
+</span></span><span style=display:flex><span>      },
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>&#34;source&#34;</span>: {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&#34;content_type&#34;</span>: <span style=color:#f1fa8c>&#34;application/wasm&#34;</span>,
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>&#34;source&#34;</span>: <span style=color:#f1fa8c>&#34;file:///Users/root/Desktop/Workspace/github/spin/spinhttpgo/main.wasm&#34;</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>    }
+</span></span><span style=display:flex><span>  ]
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>spin.toml文件</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-toml data-lang=toml><span style=display:flex><span>spin_version = <span style=color:#f1fa8c>&#34;1&#34;</span>
+</span></span><span style=display:flex><span>authors = [<span style=color:#f1fa8c>&#34;zhangchao &lt;zchao9100@gmail.com&gt;&#34;</span>]
+</span></span><span style=display:flex><span>description = <span style=color:#f1fa8c>&#34;a spin http handler in go for wasm&#34;</span>
+</span></span><span style=display:flex><span>name = <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>
+</span></span><span style=display:flex><span>trigger = { type = <span style=color:#f1fa8c>&#34;http&#34;</span>, base = <span style=color:#f1fa8c>&#34;/&#34;</span> }
+</span></span><span style=display:flex><span>version = <span style=color:#f1fa8c>&#34;0.1.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>[[component]]
+</span></span><span style=display:flex><span>id = <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>
+</span></span><span style=display:flex><span>source = <span style=color:#f1fa8c>&#34;main.wasm&#34;</span>
+</span></span><span style=display:flex><span>[component.trigger]
+</span></span><span style=display:flex><span>route = <span style=color:#f1fa8c>&#34;/hello&#34;</span>
+</span></span><span style=display:flex><span>[component.build]
+</span></span><span style=display:flex><span>command = <span style=color:#f1fa8c>&#34;tinygo build -wasm-abi=generic -target=wasi -gc=leaking -no-debug -o main.wasm main.go&#34;</span>
+</span></span></code></pre></div><p>参考</p><p><a href=https://developer.fermyon.com/spin/http-trigger>https://developer.fermyon.com/spin/http-trigger</a></p><p><a href=https://developer.fermyon.com/spin/distributing-apps>https://developer.fermyon.com/spin/distributing-apps</a></p><p><a href=https://developer.fermyon.com/spin/plugin-authoring>https://developer.fermyon.com/spin/plugin-authoring</a></p><p><a href=https://developer.fermyon.com/spin/extending-and-embedding>https://developer.fermyon.com/spin/extending-and-embedding</a></p><hr><ul class=pager><li class=previous><a href=/2023/02/11/2023-02-11-spin-introduction.md/ data-toggle=tooltip data-placement=top title=Spin介绍>&larr;
+Previous Post</a></li><li class=next><a href=/2023/03/07/2023-03-07-pluggable-component.md/ data-toggle=tooltip data-placement=top title="Dapr Pluggable component源码分析介绍">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

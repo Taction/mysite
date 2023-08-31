@@ -1,0 +1,148 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="基于WebAsssembly的Serverless探索1:wasm概述"><meta property="og:title" content="基于WebAsssembly的Serverless探索1:wasm概述"><meta property="twitter:title" content="基于WebAsssembly的Serverless探索1:wasm概述"><meta name=description content="WebAssembly 是一种低层次的二进制格式代码，体积小，因此加载和执行速度快。你不需要直接编写 WebAssembly 代码，而是可以从其他高级语言编译而来。**它是一种可移植且通用的二进制指令格式，用于在虚拟机中进行内存安全、沙盒执行。**可以用 C、C++、Rust、AssemblyScript、C#、Go、Swift 等多种语言编写程序，并将它们编译为 Wasm。"><meta property="og:description" content="WebAssembly 是一种低层次的二进制格式代码，体积小，因此加载和执行速度快。你不需要直接编写 WebAssembly 代码，而是可以从其他高级语言编译而来。**它是一种可移植且通用的二进制指令格式，用于在虚拟机中进行内存安全、沙盒执行。**可以用 C、C++、Rust、AssemblyScript、C#、Go、Swift 等多种语言编写程序，并将它们编译为 Wasm。"><meta property="twitter:description" content="WebAssembly 是一种低层次的二进制格式代码，体积小，因此加载和执行速度快。你不需要直接编写 WebAssembly 代码，而是可以从其他高级语言编译而来。**它是一种可移植且通用的二进制指令格式，用于在虚拟机中进行内存安全、沙盒执行。**可以用 C、C++、Rust、AssemblyScript、C#、Go、Swift 等多种语言编写程序，并将它们编译为 Wasm。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>基于WebAsssembly的Serverless探索1:wasm概述 | 张超的博客 | Taction Blog</title><link rel=canonical href=/2021/10/17/2021-10-17-wasm1.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/webassembly title=webassembly>webassembly</a></div><h1>基于WebAsssembly的Serverless探索1:wasm概述</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Sunday, October 17, 2021</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h3 id=一介绍>一、介绍</h3><h4 id=11-什么是-webassembly>1.1 什么是 WebAssembly</h4><blockquote><p>运行在沙盒中的二进制格式代码</p></blockquote><p>WebAssembly 是一种低层次的二进制格式代码，体积小，因此加载和执行速度快。你不需要直接编写 WebAssembly 代码，而是可以从其他高级语言编译而来。**它是一种可移植且通用的二进制指令格式，用于在虚拟机中进行内存安全、沙盒执行。**可以用 C、C++、Rust、AssemblyScript、C#、Go、Swift 等多种语言编写程序，并将它们编译为 Wasm。</p><p>WebAssembly对比docker冷启动延迟可以降低90%以上，对比于js通常具有两倍的运行速度优势。<strong>由于其冷启动快、体积小、执行速度快、灵活性高、安全性高和具有可移植性，因此正在被逐渐被应用于serverless和边缘计算领域。</strong></p><h4 id=12-系统接口>1.2 系统接口</h4><h5 id=121-wasi>1.2.1 WASI</h5><p><strong>WebAssembly System Interface (WASI)是一套标准的函数接口定义，作为wasm与“系统”进行交互的标准函数；类似于操作系统为运行的程序提供的标准调用接口一样。</strong> 这个接口的设计考虑到了Wasm 的目标——可移植性和安全性。WASI 是二进制兼容的，这意味着 Wasm二进制文件可以在不同的具体系统（如 Linux 和 Windows）之间移植，也可以在不同浏览器之间移植。Wasm运行时应该实现这些接口并将其转换为底层的具体操作系统。WASI 还在安全性方面进行了创新，超越了经典的粗粒度访问控制（由于中间存在运行时抽象，所以在运行时中可以定义任何标准的或者自定义的访问控制）。</p><h5 id=122-自定义系统接口>1.2.2 自定义系统接口</h5><p>WebAssembly对系统的函数调用并不局限于wasi，而是取决于运行wasm的运行时宿主向WebAssembly导入了什么函数。一个比较典型的例子就是enovy和mosn目前在用的一套代理协议标准：<code>proxy_abi_version_0_2_0</code>，运行时在启动wasm程序的时候，将此类函数注入，wasm中就可以直接使用这些函数了。</p><p>当然我们也可以任意的自定义webassembly可以从宿主系统调用的函数，你将在后面模型试验的例子里看到两个典型的例子。为WebAssembly程序提供了函数计算和网络访问两个函数。这两个函数不在任何的interface标准中，完全是我们自定义的函数。</p><p>下图展示了部分<code>proxy_abi_version_0_2_0</code>中定义的函数，是运行时将这些函数注册给wasm的代码。</p><p><img src=/images/registerfunctions.png alt=image-20210708135302772></p><h4 id=13-导出函数>1.3 导出函数</h4><blockquote><p>利用这个特点，可以将wasm作为插件机制来使用。</p></blockquote><p>除了WebAssembly可以调用运行时宿主提供的“系统调用”外，WebAssembly可以导出实现的函数，宿主机可以调用此函数，这类函数被称为导出函数。</p><p><img src=/images/functionoverview.png alt=image-20210708142246927></p><h4 id=wasm的安全>wasm的安全</h4><p>Wasm 使用故障隔离技术来沙箱执行模块。与宿主环境的互动只能通过导入的函数实现。这种机制代表了一个“安全的外部函数接口”，因为它可以与外部环境通信，但不能脱离沙箱。这是 Wasm 的一个重要安全特性。从主机的角度来看，没有导入的模块没有副作用。甚至打印 Hello World！都需要导入打印功能。同样，写入文件、网络套接字或读取时钟都需要导入。</p><h5 id=内存安全>内存安全</h5><p>在 Wasm 中，所有内存访问都仅限于模块的线性内存。该存储器与代码空间分开，可防止程序覆盖指令。程序可以只能在自己的执行环境中运行，不能逃逸。这意味着 Wasm 运行时可以安全地执行多个不受信任的模块，它们具有自己的线性内存，在同一进程内存空间中并且不需要额外的隔离。特别是，“无法在 WebAssembly 中表达对任意内存位置的读取和写入”，因为 Wasm 的内存指令使用偏移量而不是地址。此外，运行时的边界检查可确保指令仅写入线性内存，这是使 Wasm 成为一种轻量级容器技术的关键方面。</p><h4 id=14-代码案例>1.4 代码案例</h4><p>接下来以一个简单的案例了解下，其中wasm程序导出一个乘法函数。wasm运行时提供一个加法函数供wasm调用。其中wasm提供的函数是可以任意定义实现的，这一点在后面模型试验的案例中可以看到。</p><p>其结构及接口定义如下图所示：</p><p><img src=/images/example.png alt=image-20210708143343468></p><p><img src=/images/structure.png alt=image-20210708164115373></p><h5 id=141-wasm代码>1.4.1 wasm代码</h5><p>wasm代码中可以看到对于加法<strong>add</strong>函数，只定义了函数签名，没有定义实际的逻辑，表明这个函数是一个导入的由运行时提供的函数。同时提供了<strong>multiply</strong>函数，并标注这是一个导出函数，编译器会自动帮我们进行导出工作。具体的代码如下：</p><pre tabindex=0><code>// This calls a JS function from Go.
+func main() {
+   println(&#34;webassembly打印，调用加法函数2+3= &#34;, add(2, 3)) // expecting 5
+}
+
+// This function is imported from JavaScript, as it doesn&#39;t define a body.
+// You should define a function named &#39;main.add&#39; in the WebAssembly &#39;env&#39;
+// module from JavaScript.
+func add(x, y int) int
+
+
+// This function is exported to JavaScript, so can be called using
+// exports.multiply() in JavaScript.
+//export multiply
+func multiply(x, y int) int {
+   return x * y
+}
+</code></pre><h5 id=142-运行时宿主代码>1.4.2 运行时宿主代码</h5><pre tabindex=0><code>func main() {
+
+   // 加载wasm字节码
+   pwd, _ := os.Getwd()
+   path := filepath.Join(pwd, &#34;../tinygowasm/number.wasm&#34;)
+   wasm, err := ioutil.ReadFile(filepath.Clean(path))
+   // 省略具体加载的细节
+
+   // 为webassembly提供加法函数
+   importObject.Register(
+      &#34;env&#34;,
+      map[string]wasmer.IntoExtern{
+         &#34;main.add&#34;: wasmer.NewFunction(
+            store,
+            wasmer.NewFunctionType(wasmer.NewValueTypes(wasmer.I32, wasmer.I32, wasmer.I32, wasmer.I32), wasmer.NewValueTypes(wasmer.I32)),
+            func(args []wasmer.Value) ([]wasmer.Value, error) {
+               return []wasmer.Value{wasmer.NewI32(args[0].I32() + args[1].I32())}, nil
+            },
+         ),
+      },
+   )
+   instance, err = wasmer.NewInstance(module, importObject)
+   check(err)
+
+   // 运行时宿主调用webassembly中定义的乘法函数
+   multi, err := instance.Exports.GetFunction(&#34;multiply&#34;)
+   check(err)
+   i, err := multi(3, 5)
+   check(err)
+   fmt.Printf(&#34;运行时调用wasm乘法函数，运算3X5= %d\n&#34;, i)
+   // 运行webassembly主程序，即go文件中定义的main函数
+   start, err := instance.Exports.GetFunction(&#34;_start&#34;)
+   check(err)
+   start()
+}
+</code></pre><h5 id=143-运行结果>1.4.3 运行结果</h5><p>可以通过控制台打印看到，无论是wasm调用运行时提供的加法函数，还是运行时调用wasm中定义的乘法函数都可以正常运行</p><p><img src=/images/result.png alt=image-20210708144330696></p><h4 id=15-应用场景及发展方向>1.5 应用场景及发展方向</h4><ol><li>对于WebAssembly的后续发展思路分为两个大方向，<ol><li>第一个是对接k8s调度层（调度器底层），通过k8s来调度wasm程序的运行</li><li>第二个是以sidecar作为WebAssembly的运行时引擎，通过控制面来调控运行的程序。</li></ol></li><li>业务场景的思路：在抗流量设施中，或者有突发流量的场景中，可以改造成这种具有弹性的WebAssembly的运行模式。</li><li>通过WebAssembly实现彻底的语言无关的流量治理，使用统一的apm体系，打造新一代运行时</li><li>数据面策略型逻辑代码的处理：流量治理、遥测策略、安全规则校验、服务自定义策略&mldr;&mldr;</li></ol><h3 id=二模型试验>二、模型试验</h3><p>对于数字加减的模型试验我们在介绍原理的时候已经进行过介绍了，这表明对于纯逻辑计算，无论是wasm调用运行时还是运行时调用wasm函数都是没有问题的。</p><p>接下来进行一个稍微复杂一些的模型试验，在现实世界中通常进行最多的就是网络请求的处理。因此在接下来的模型试验中，运行时为webassembly提供了一个“网络接口”函数<code>getHttpResp</code>。这个函数的功能是接收一个url参数，并且请求此url，并将请求得到的结果返回给wasm。wasm逻辑就是调用此函数并打印此次请求的结果。</p><p><img src=/images/examplesimple.png alt=image-20210708144948920></p><h4 id=21-wasm代码>2.1 wasm代码</h4><p>wasm代码中定义了一个url，调用<code>getHttpResp</code>函数并打印请求结果</p><pre tabindex=0><code>func main() {
+   url := &#34;http://apis.juhe.cn/ip/ip2addr&#34;
+   var rvs int
+   var raw *byte
+   st := getHttpResp(url, &amp;raw, &amp;rvs)
+   if st != 1 {
+      println(&#34;请求错误,code&#34;, st)
+   }
+   println(&#34;wasm打印，调用运行时网络请求函数并打印结果:&#34;, url, string(RawBytePtrToByteSlice(raw, rvs)))
+}
+
+func getHttpResp(s string, returnValueData **byte, returnValueSize *int) int
+</code></pre><h4 id=22-运行时宿主代码>2.2 运行时宿主代码</h4><p>wasm运行时主要代码就是为wasm提供<code>getHttpResp</code>函数，在接下来的代码示例中去掉在上文中提到的其他细节，主要展示提供<code>getHttpResp</code>函数部分代码.此代码的主要逻辑就是先获取到传参url，请求url，将请求得到的结果拷贝到共享内存因此wasm可以从共享内存中获取请求结果。并返回wasm一个数字作为是否请求成功的标记。</p><pre tabindex=0><code>importObject.Register(
+   &#34;env&#34;,
+   map[string]wasmer.IntoExtern{
+      &#34;main.getHttpResp&#34;: wasmer.NewFunction(
+         store,
+         wasmer.NewFunctionType(wasmer.NewValueTypes(wasmer.I32, wasmer.I32, wasmer.I32, wasmer.I32, wasmer.I32, wasmer.I32), wasmer.NewValueTypes(wasmer.I32)),
+         func(args []wasmer.Value) ([]wasmer.Value, error) {
+            in, bufferType, returnBufferData, returnBufferSize, _, _ := args[0].I32(), args[1].I32(), args[2].I32(), args[3].I32(), args[4].I32(), args[5].I32()
+            m, err := instance.Exports.GetMemory(&#34;memory&#34;)
+            if err != nil {
+               return nil, err
+            }
+            mem := m.Data()
+            url := string(mem[in:in+bufferType])
+            res, err := http.Get(url)
+            if err != nil {
+               return []wasmer.Value{wasmer.NewI32(0)}, nil
+            }
+            byt, err := ioutil.ReadAll(res.Body)
+            res.Body.Close()
+            if err != nil {
+               return []wasmer.Value{wasmer.NewI32(0)}, nil
+            }
+            blen := int32(len(byt))
+            // 由于没做溢出检查，先最多取100个字符防止溢出
+            if blen &gt; 100 {
+               blen = 100
+            }
+            byt = byt[:blen]
+            // todo 需要check 防止 overflow
+            var addrIndex int32
+            malloc, err := instance.Exports.GetRawFunction(&#34;malloc&#34;)
+            if err == nil {
+               addr, err := malloc.Call(blen)
+               if err != nil {
+                  return []wasmer.Value{wasmer.NewI32(0)}, nil
+               }
+               addrIndex , _ = addr.(int32)
+            } else {
+               addrIndex = returnBufferData + int32(blen) + 32
+            }
+
+            copy(mem[addrIndex:], byt[:blen])
+            binary.LittleEndian.PutUint32(mem[returnBufferSize:], uint32(blen))
+            binary.LittleEndian.PutUint32(mem[returnBufferData:], uint32(addrIndex))
+            s := RawBytePtrToByteSlice((*byte)(unsafe.Pointer(uintptr(unsafe.Pointer(&amp;mem)) + uintptr(addrIndex - blen))),blen)
+            _=s
+            watch := mem[in:addrIndex+blen]
+            _=watch
+            return []wasmer.Value{wasmer.NewI32(1)}, nil
+         },
+      ),
+   },
+)
+</code></pre><h4 id=23-网络试验结果>2.3 网络试验结果</h4><p>程序正常运行并且在wasm中可以正常打印网络请求的结果。</p><p><img src=/images/resultprint.png alt=image-20210708150016833></p><h3 id=额外说明>额外说明</h3><h5 id=通过共享内存交互>通过共享内存交互</h5><p>wasm只支持4种数据结构：int32、int64、float32、float64。当传递其他类型的数据，比如字符串时，需要通过共享内存来通信。通过</p><hr><ul class=pager><li class=previous><a href=/2021/10/16/2021-10-16-wasm2.md/ data-toggle=tooltip data-placement=top title=基于WebAsssembly的Serverless探索2：相关项目分析>&larr;
+Previous Post</a></li><li class=next><a href=/2021/10/26/2021-10-26-manage-wasm-using-docker.md/ data-toggle=tooltip data-placement=top title=使用Docker工具在WasmEdge中管理WebAssembly应用程序>Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

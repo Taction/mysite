@@ -1,0 +1,961 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Dapr Pluggable component源码分析介绍"><meta property="og:title" content="Dapr Pluggable component源码分析介绍"><meta property="twitter:title" content="Dapr Pluggable component源码分析介绍"><meta name=description content="本文主要从dapr运行时、SDK和部署3部分的源码来介绍dapr的Pluggable component"><meta property="og:description" content="本文主要从dapr运行时、SDK和部署3部分的源码来介绍dapr的Pluggable component"><meta property="twitter:description" content="本文主要从dapr运行时、SDK和部署3部分的源码来介绍dapr的Pluggable component"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Dapr Pluggable component源码分析介绍 | 张超的博客 | Taction Blog</title><link rel=canonical href=/2023/03/07/2023-03-07-pluggable-component.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/dapr title=dapr>dapr</a></div><h1>Dapr Pluggable component源码分析介绍</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Tuesday, March 7, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>本文主要从dapr运行时、SDK和部署3部分的源码来介绍dapr的Pluggable component</p><h3 id=dapr运行时>dapr运行时</h3><h4 id=pluggable-组件自动发现机制>Pluggable 组件自动发现机制</h4><p>Dapr在实例化一个组件的时候通过type+version来唯一确定一个组件的类型，那么如何向Dapr配置pluggable组件呢。Dapr在启动时会进行组件的自动发现，由于dapr与Pluggable 组件仅通过UDS进行通信，所以Dapr对配置的UDS文件夹路径进行扫描，查找所有的UDS，将其文件名作为组件类型。以下是具体代码。</p><p><code>initPluggableComponents</code>是Pluggable 组件自动发现的入口，在initRuntime中被调用。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// initPluggableComponents discover pluggable components and initialize with their respective registries.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (a <span style=color:#ff79c6>*</span>DaprRuntime) <span style=color:#50fa7b>initPluggableComponents</span>() {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> runtime.GOOS <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;windows&#34;</span> {
+</span></span><span style=display:flex><span>      log.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;the current OS does not support pluggable components feature, skipping initialization&#34;</span>)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> pluggable.<span style=color:#50fa7b>Discover</span>(a.ctx); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      log.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;could not initialize pluggable components %v&#34;</span>, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>Discover</code>函数从<code>componentsSocketPath</code>下面发现文件，根据文件mode判断是否是Unix domain socket。这也是dapr文档里提到为什么一定需要pluggable component先启动的原因。然后通过注册的<code>callbackFunc func(name string, dialer GRPCConnectionDialer)</code>向<code>DefaultRegistry</code>来注册对应component的初始化函数。其他内置的组件也会在初始化的时候注册初始化函数，因此在注册完成后运行时对组件的处理上就“一视同仁”了。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Discover discover the pluggable components and callback the service discovery with the given component name and grpc dialer.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Discover</span>(ctx context.Context) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   services, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>serviceDiscovery</span>(<span style=color:#8be9fd;font-style:italic>func</span>(socket <span style=color:#8be9fd>string</span>) (reflectServiceClient, <span style=color:#8be9fd;font-style:italic>func</span>(), <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>      conn, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>SocketDial</span>(
+</span></span><span style=display:flex><span>         ctx,
+</span></span><span style=display:flex><span>         socket,
+</span></span><span style=display:flex><span>         grpc.<span style=color:#50fa7b>WithBlock</span>(),
+</span></span><span style=display:flex><span>      )
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      client <span style=color:#ff79c6>:=</span> grpcreflect.<span style=color:#50fa7b>NewClientV1Alpha</span>(ctx, reflectpb.<span style=color:#50fa7b>NewServerReflectionClient</span>(conn))
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> client, <span style=color:#50fa7b>reflectServiceConnectionCloser</span>(conn, client), <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>	 <span style=color:#6272a4>// 这里就是把自己注册到DefaultRegistry，从而在解析对应类型的组件的时候，可以获取对应的工厂
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#50fa7b>callback</span>(services)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>serviceDiscovery</code>执行具体的发现逻辑，遍历文件夹下所有文件，如果是uds就反射其实现的service，记录下来。后面会通过callback根据全局的service->注册函数来进行向全局工厂注册。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// serviceDiscovery returns all available discovered pluggable components services.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// uses gRPC reflection package to list implemented services.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>serviceDiscovery</span>(reflectClientFactory <span style=color:#8be9fd;font-style:italic>func</span>(<span style=color:#8be9fd>string</span>) (reflectServiceClient, <span style=color:#8be9fd;font-style:italic>func</span>(), <span style=color:#8be9fd>error</span>)) ([]service, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	services <span style=color:#ff79c6>:=</span> []service{}
+</span></span><span style=display:flex><span>	componentsSocketPath <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>GetSocketFolderPath</span>()
+</span></span><span style=display:flex><span>	_, err <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>Stat</span>(componentsSocketPath)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> os.<span style=color:#50fa7b>IsNotExist</span>(err) { <span style=color:#6272a4>// not exists is the same as empty.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>return</span> services, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	log.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;loading pluggable components under path %s&#34;</span>, componentsSocketPath)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	files, err <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>ReadDir</span>(componentsSocketPath)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;could not list pluggable components unix sockets: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> _, dirEntry <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> files {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> dirEntry.<span style=color:#50fa7b>IsDir</span>() { <span style=color:#6272a4>// skip dirs
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		f, err <span style=color:#ff79c6>:=</span> dirEntry.<span style=color:#50fa7b>Info</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		socket <span style=color:#ff79c6>:=</span> filepath.<span style=color:#50fa7b>Join</span>(componentsSocketPath, f.<span style=color:#50fa7b>Name</span>())
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> !utils.<span style=color:#50fa7b>IsSocket</span>(f) {
+</span></span><span style=display:flex><span>			discoveryLog.<span style=color:#50fa7b>Warnf</span>(<span style=color:#f1fa8c>&#34;could not use socket for file %s&#34;</span>, socket)
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// dail server构造反射client
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		refctClient, cleanup, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>reflectClientFactory</span>(socket)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 关闭与server链接，排空GRPC反射数据流
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cleanup</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 列出服务端实现的所有service，包括反射service本身。例如对于pubsub来说，会包含以下两项`dapr.proto.components.v1.PubSub`,`grpc.reflection.v1alpha.ServerReflection`。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		serviceList, err <span style=color:#ff79c6>:=</span> refctClient.<span style=color:#50fa7b>ListServices</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;unable to list services: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 将socket地址和额外的grpc选项闭包方式传入dialer方法，dialer将会接收`componentName`并且通过`WithStreamInterceptor`option将其自动加入到metadata中。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		dialer <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>socketDialer</span>(socket, grpc.<span style=color:#50fa7b>WithBlock</span>(), grpc.<span style=color:#50fa7b>FailOnNonTempDialError</span>(<span style=color:#ff79c6>true</span>))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// componentName就是componet在注册的时候提供的名称，在实例化这个component的时候需要以`type.componentName`例如`pubsub.my-component`
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		componentName <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>removeExt</span>(f.<span style=color:#50fa7b>Name</span>())
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 这里根据这个socket实现的service注册到列表里。后面会通过callback根据实现的service进行注册。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>for</span> _, svc <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> serviceList {
+</span></span><span style=display:flex><span>			services = <span style=color:#8be9fd;font-style:italic>append</span>(services, service{
+</span></span><span style=display:flex><span>				componentName: componentName,
+</span></span><span style=display:flex><span>				protoRef:      svc,
+</span></span><span style=display:flex><span>				dialer:        dialer,
+</span></span><span style=display:flex><span>			})
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	log.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;found %d pluggable component services&#34;</span>, <span style=color:#8be9fd;font-style:italic>len</span>(services)<span style=color:#ff79c6>-</span><span style=color:#bd93f9>1</span>) <span style=color:#6272a4>// reflection api doesn&#39;t count.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>return</span> services, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>callback函数的作用是将组件注册到对应的组件种类下（pubsub、state、binding&mldr;）。Dapr中的组件类型格式是<code>组件种类.组件具体类型</code>例如<code>pubsub.redis</code>，不同的组件种类需要注册到不同的组件工厂中。这里就是通过一个全局的类型=>注册函数映射来调用实际的注册函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// callback invoke callback function for each given service
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>callback</span>(services []service) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> _, service <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> services {
+</span></span><span style=display:flex><span>		callback, ok <span style=color:#ff79c6>:=</span> onServiceDiscovered[service.protoRef]
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> !ok { <span style=color:#6272a4>// ignoring unknown service
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>callback</span>(service.componentName, service.dialer)
+</span></span><span style=display:flex><span>		log.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;pluggable component &#39;%s&#39; was successfully registered for &#39;%s&#39;&#34;</span>, service.componentName, service.protoRef)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>所有支持Pluggable 组件的种类，都会在初始化的时候注册自己的种类的工厂注册函数。例如下面就是对于pubsub的注册。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>init</span>() {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>//nolint:nosnakecase
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   pluggable.<span style=color:#50fa7b>AddServiceDiscoveryCallback</span>(proto.PubSub_ServiceDesc.ServiceName, <span style=color:#8be9fd;font-style:italic>func</span>(name <span style=color:#8be9fd>string</span>, dialer pluggable.GRPCConnectionDialer) {
+</span></span><span style=display:flex><span>      DefaultRegistry.<span style=color:#50fa7b>RegisterComponent</span>(<span style=color:#50fa7b>newGRPCPubSub</span>(dialer), name)
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=加载>加载</h4><p>根据k8s还是standalone模式，初始化不同的loader，然后加载yaml文件，首先解析<code>typeInfo</code>判断Kind是否跟要解析的目标一致，针对此情况，就是<code>Component</code>。加载完时候过滤一下scop，去除掉不是自己app-id的。然后把comp丢进Runtime <code>pendingComponents</code>channel中，有一个协程在启动时异步进行处理。先加载机密存储组件，然后加载其余的组件。这里加载组件是不区分build-in还是pluggable的。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (a <span style=color:#ff79c6>*</span>DaprRuntime) <span style=color:#50fa7b>loadComponents</span>(opts <span style=color:#ff79c6>*</span>runtimeOpts) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#8be9fd;font-style:italic>var</span> loader components.ComponentLoader
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 根据运行环境时k8s还是Standalone来使用不同的加载配置模式
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>switch</span> a.runtimeConfig.Mode {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> modes.KubernetesMode:
+</span></span><span style=display:flex><span>      loader = components.<span style=color:#50fa7b>NewKubernetesComponents</span>(a.runtimeConfig.Kubernetes, a.namespace, a.operatorClient, a.podName)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> modes.StandaloneMode:
+</span></span><span style=display:flex><span>      loader = components.<span style=color:#50fa7b>NewStandaloneComponents</span>(a.runtimeConfig.Standalone)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;components loader for mode %s not found&#34;</span>, a.runtimeConfig.Mode)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   log.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;loading components&#34;</span>)
+</span></span><span style=display:flex><span>   comps, err <span style=color:#ff79c6>:=</span> loader.<span style=color:#50fa7b>LoadComponents</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> _, comp <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> comps {
+</span></span><span style=display:flex><span>      log.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;found component. name: %s, type: %s/%s&#34;</span>, comp.ObjectMeta.Name, comp.Spec.Type, comp.Spec.Version)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   authorizedComps <span style=color:#ff79c6>:=</span> a.<span style=color:#50fa7b>getAuthorizedComponents</span>(comps)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   a.componentsLock.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>   a.components = authorizedComps
+</span></span><span style=display:flex><span>   a.componentsLock.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Iterate through the list twice
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// First, we look for secret stores and load those, then all other components
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// Sure, we could sort the list of authorizedComps... but this is simpler and most certainly faster
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 先处理机密存储，因为其他组件可能会依赖机密存储中的信息
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>for</span> _, comp <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> authorizedComps {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> strings.<span style=color:#50fa7b>HasPrefix</span>(comp.Spec.Type, <span style=color:#8be9fd;font-style:italic>string</span>(components.CategorySecretStore)<span style=color:#ff79c6>+</span><span style=color:#f1fa8c>&#34;.&#34;</span>) {
+</span></span><span style=display:flex><span>         a.pendingComponents <span style=color:#ff79c6>&lt;-</span> comp
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> _, comp <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> authorizedComps {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> !strings.<span style=color:#50fa7b>HasPrefix</span>(comp.Spec.Type, <span style=color:#8be9fd;font-style:italic>string</span>(components.CategorySecretStore)<span style=color:#ff79c6>+</span><span style=color:#f1fa8c>&#34;.&#34;</span>) {
+</span></span><span style=display:flex><span>         a.pendingComponents <span style=color:#ff79c6>&lt;-</span> comp
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=处理单个组件>处理单个组件</h5><p>这个函数的具体逻辑就是针对单个组件定义，通过工厂方法创建组件实例，然后根据类型存储在runtime中。这里面背后的详细逻辑比较多就不展开介绍了，会在后面的文章中进行介绍。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (a <span style=color:#ff79c6>*</span>DaprRuntime) <span style=color:#50fa7b>processComponentAndDependents</span>(comp componentsV1alpha1.Component) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   log.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;loading component. name: %s, type: %s/%s&#34;</span>, comp.ObjectMeta.Name, comp.Spec.Type, comp.Spec.Version)
+</span></span><span style=display:flex><span>   res <span style=color:#ff79c6>:=</span> a.<span style=color:#50fa7b>preprocessOneComponent</span>(<span style=color:#ff79c6>&amp;</span>comp)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> res.unreadyDependency <span style=color:#ff79c6>!=</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      a.pendingComponentDependents[res.unreadyDependency] = <span style=color:#8be9fd;font-style:italic>append</span>(a.pendingComponentDependents[res.unreadyDependency], comp)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>	 <span style=color:#6272a4>// 解析组件类型，pubsub、state等，就是在注册到registry时.前面的部分。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   compCategory <span style=color:#ff79c6>:=</span> a.<span style=color:#50fa7b>extractComponentCategory</span>(comp)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> compCategory <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// the category entered is incorrect, return error
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;incorrect type %s&#34;</span>, comp.Spec.Type)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   ch <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>chan</span> <span style=color:#8be9fd>error</span>, <span style=color:#bd93f9>1</span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   timeout, err <span style=color:#ff79c6>:=</span> time.<span style=color:#50fa7b>ParseDuration</span>(comp.Spec.InitTimeout)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      timeout = defaultComponentInitTimeout
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 异步实际解析，好在超时的时候进行退出。这个函数就是分类型进行实际处理的。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      ch <span style=color:#ff79c6>&lt;-</span> a.<span style=color:#50fa7b>doProcessOneComponent</span>(compCategory, comp)
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> err <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>ch:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>time.<span style=color:#50fa7b>After</span>(timeout):
+</span></span><span style=display:flex><span>      diag.DefaultMonitoring.<span style=color:#50fa7b>ComponentInitFailed</span>(comp.Spec.Type, <span style=color:#f1fa8c>&#34;init&#34;</span>, comp.ObjectMeta.Name)
+</span></span><span style=display:flex><span>      err <span style=color:#ff79c6>:=</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;init timeout for component %s exceeded after %s&#34;</span>, comp.Name, timeout.<span style=color:#50fa7b>String</span>())
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>NewInitError</span>(InitComponentFailure, comp.<span style=color:#50fa7b>LogName</span>(), err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   log.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;component loaded. name: %s, type: %s/%s&#34;</span>, comp.ObjectMeta.Name, comp.Spec.Type, comp.Spec.Version)
+</span></span><span style=display:flex><span>   a.<span style=color:#50fa7b>appendOrReplaceComponents</span>(comp)
+</span></span><span style=display:flex><span>   diag.DefaultMonitoring.<span style=color:#50fa7b>ComponentLoaded</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   dependency <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>componentDependency</span>(compCategory, comp.Name)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> deps, ok <span style=color:#ff79c6>:=</span> a.pendingComponentDependents[dependency]; ok {
+</span></span><span style=display:flex><span>      <span style=color:#8be9fd;font-style:italic>delete</span>(a.pendingComponentDependents, dependency)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>for</span> _, dependent <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> deps {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> a.<span style=color:#50fa7b>processComponentAndDependents</span>(dependent); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>pubsub初始化</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (a <span style=color:#ff79c6>*</span>DaprRuntime) <span style=color:#50fa7b>initPubSub</span>(c componentsV1alpha1.Component) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   fName <span style=color:#ff79c6>:=</span> c.<span style=color:#50fa7b>LogName</span>()
+</span></span><span style=display:flex><span>   pubSub, err <span style=color:#ff79c6>:=</span> a.pubSubRegistry.<span style=color:#50fa7b>Create</span>(c.Spec.Type, c.Spec.Version, fName)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      diag.DefaultMonitoring.<span style=color:#50fa7b>ComponentInitFailed</span>(c.Spec.Type, <span style=color:#f1fa8c>&#34;creation&#34;</span>, c.ObjectMeta.Name)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>NewInitError</span>(CreateComponentFailure, fName, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   baseMetadata <span style=color:#ff79c6>:=</span> a.<span style=color:#50fa7b>toBaseMetadata</span>(c)
+</span></span><span style=display:flex><span>   properties <span style=color:#ff79c6>:=</span> baseMetadata.Properties
+</span></span><span style=display:flex><span>   consumerID <span style=color:#ff79c6>:=</span> strings.<span style=color:#50fa7b>TrimSpace</span>(properties[<span style=color:#f1fa8c>&#34;consumerID&#34;</span>])
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> consumerID <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      consumerID = a.runtimeConfig.ID
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   properties[<span style=color:#f1fa8c>&#34;consumerID&#34;</span>] = consumerID
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   err = pubSub.<span style=color:#50fa7b>Init</span>(context.<span style=color:#50fa7b>TODO</span>(), pubsub.Metadata{Base: baseMetadata})
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      diag.DefaultMonitoring.<span style=color:#50fa7b>ComponentInitFailed</span>(c.Spec.Type, <span style=color:#f1fa8c>&#34;init&#34;</span>, c.ObjectMeta.Name)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>NewInitError</span>(InitComponentFailure, fName, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   pubsubName <span style=color:#ff79c6>:=</span> c.ObjectMeta.Name
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   a.pubSubs[pubsubName] = pubsubItem{
+</span></span><span style=display:flex><span>      component:           pubSub,
+</span></span><span style=display:flex><span>      scopedSubscriptions: scopes.<span style=color:#50fa7b>GetScopedTopics</span>(scopes.SubscriptionScopes, a.runtimeConfig.ID, properties),
+</span></span><span style=display:flex><span>      scopedPublishings:   scopes.<span style=color:#50fa7b>GetScopedTopics</span>(scopes.PublishingScopes, a.runtimeConfig.ID, properties),
+</span></span><span style=display:flex><span>      allowedTopics:       scopes.<span style=color:#50fa7b>GetAllowedTopics</span>(properties),
+</span></span><span style=display:flex><span>      namespaceScoped:     <span style=color:#50fa7b>metadataContainsNamespace</span>(c.Spec.Metadata),
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   diag.DefaultMonitoring.<span style=color:#50fa7b>ComponentInitialized</span>(c.Spec.Type)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>主要就是给logger加上component名称，然后调用工厂函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>Registry) <span style=color:#50fa7b>getPubSub</span>(name, version, logName <span style=color:#8be9fd>string</span>) (<span style=color:#8be9fd;font-style:italic>func</span>() pubsub.PubSub, <span style=color:#8be9fd>bool</span>) {
+</span></span><span style=display:flex><span>   nameLower <span style=color:#ff79c6>:=</span> strings.<span style=color:#50fa7b>ToLower</span>(name)
+</span></span><span style=display:flex><span>   versionLower <span style=color:#ff79c6>:=</span> strings.<span style=color:#50fa7b>ToLower</span>(version)
+</span></span><span style=display:flex><span>   pubSubFn, ok <span style=color:#ff79c6>:=</span> p.messageBuses[nameLower<span style=color:#ff79c6>+</span><span style=color:#f1fa8c>&#34;/&#34;</span><span style=color:#ff79c6>+</span>versionLower]
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> ok {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> p.<span style=color:#50fa7b>wrapFn</span>(pubSubFn, logName), <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> components.<span style=color:#50fa7b>IsInitialVersion</span>(versionLower) {
+</span></span><span style=display:flex><span>      pubSubFn, ok = p.messageBuses[nameLower]
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> ok {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> p.<span style=color:#50fa7b>wrapFn</span>(pubSubFn, logName), <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>newGRPCPubSub</code>最终返回的是<code>*grpcPubSub</code>这个结构体实现了<code>pubsub.PubSub</code>是对实际的Pluggable的一层包装。在init的时候实例化一个Pluggable component，包含三部分：</p><ul><li>features缓存，因为这个不会变，所以获取一次存起来就行了，减少网络交互</li><li>GRPCConnector创建与pluggable的GRPC连接函数。这是在组件自动发现的时候注册进来的。</li><li>logger日志实体类</li></ul><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// newGRPCPubSub creates a new grpc pubsub for the given pluggable component.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>newGRPCPubSub</span>(dialer pluggable.GRPCConnectionDialer) <span style=color:#8be9fd;font-style:italic>func</span>(l logger.Logger) pubsub.PubSub {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(l logger.Logger) pubsub.PubSub {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>fromConnector</span>(l, pluggable.<span style=color:#50fa7b>NewGRPCConnectorWithDialer</span>(dialer, proto.NewPubSubClient))
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// fromConnector creates a new GRPC pubsub using the given underlying connector.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>fromConnector</span>(l logger.Logger, connector <span style=color:#ff79c6>*</span>pluggable.GRPCConnector[proto.PubSubClient]) <span style=color:#ff79c6>*</span>grpcPubSub {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>grpcPubSub{
+</span></span><span style=display:flex><span>      features:      <span style=color:#8be9fd;font-style:italic>make</span>([]pubsub.Feature, <span style=color:#bd93f9>0</span>),
+</span></span><span style=display:flex><span>      GRPCConnector: connector,
+</span></span><span style=display:flex><span>      logger:        l,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在init的时候创建grpc client，然后调用component的init接口进行初始化。缓存了一下feature。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// grpcPubSub is a implementation of a pubsub over a gRPC Protocol.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>type</span> grpcPubSub <span style=color:#8be9fd;font-style:italic>struct</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>*</span>pluggable.GRPCConnector[proto.PubSubClient]
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// features the list of state store implemented features features.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   features []pubsub.Feature
+</span></span><span style=display:flex><span>   logger   logger.Logger
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// Init initializes the grpc pubsub passing out the metadata to the grpc component.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// It also fetches and set the component features.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>grpcPubSub) <span style=color:#50fa7b>Init</span>(ctx context.Context, metadata pubsub.Metadata) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> p.<span style=color:#50fa7b>Dial</span>(metadata.Name); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   protoMetadata <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>proto.MetadataRequest{
+</span></span><span style=display:flex><span>      Properties: metadata.Properties,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   _, err <span style=color:#ff79c6>:=</span> p.Client.<span style=color:#50fa7b>Init</span>(p.Context, <span style=color:#ff79c6>&amp;</span>proto.PubSubInitRequest{
+</span></span><span style=display:flex><span>      Metadata: protoMetadata,
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// TODO Static data could be retrieved in another way, a necessary discussion should start soon.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// we need to call the method here because features could return an error and the features interface doesn&#39;t support errors
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   featureResponse, err <span style=color:#ff79c6>:=</span> p.Client.<span style=color:#50fa7b>Features</span>(p.Context, <span style=color:#ff79c6>&amp;</span>proto.FeaturesRequest{})
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   p.features = <span style=color:#8be9fd;font-style:italic>make</span>([]pubsub.Feature, <span style=color:#8be9fd;font-style:italic>len</span>(featureResponse.Features))
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> idx, f <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> featureResponse.Features {
+</span></span><span style=display:flex><span>      p.features[idx] = pubsub.<span style=color:#50fa7b>Feature</span>(f)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=dapr适配>dapr适配</h4><p>pluggable组件与dapr通过grpc进行通信，dapr与组件之间通过interface来进行交互。所以需要一层适配层将grpc的client转化为dapr的组件interface，这针对不同的组件种类需要不同的实现。例如对于pubsub来说：</p><h5 id=publish>publish</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Publish publishes data to a topic.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>grpcPubSub) <span style=color:#50fa7b>Publish</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>pubsub.PublishRequest) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	_, err <span style=color:#ff79c6>:=</span> p.Client.<span style=color:#50fa7b>Publish</span>(ctx, <span style=color:#ff79c6>&amp;</span>proto.PublishRequest{
+</span></span><span style=display:flex><span>		Topic:      req.Topic,
+</span></span><span style=display:flex><span>		PubsubName: req.PubsubName,
+</span></span><span style=display:flex><span>		Data:       req.Data,
+</span></span><span style=display:flex><span>		Metadata:   req.Metadata,
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=subscribe>subscribe</h5><p>订阅消息针对每次调用，新增一个<code>PullMessages</code>的双向grpc stream，循环读取消息，处理消息（发送给app），处理完成后发送ack。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// pullMessages pull messages of the given subscription and execute the handler for that messages.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>grpcPubSub) <span style=color:#50fa7b>pullMessages</span>(ctx context.Context, topic <span style=color:#ff79c6>*</span>proto.Topic, handler pubsub.Handler) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// first pull should be sync and subsequent connections can be made in background if necessary
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	pull, err <span style=color:#ff79c6>:=</span> p.Client.<span style=color:#50fa7b>PullMessages</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;unable to subscribe: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	streamCtx, cancel <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>WithCancel</span>(pull.<span style=color:#50fa7b>Context</span>())
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	err = pull.<span style=color:#50fa7b>Send</span>(<span style=color:#ff79c6>&amp;</span>proto.PullMessagesRequest{
+</span></span><span style=display:flex><span>		Topic: topic,
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	cleanup <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> closeErr <span style=color:#ff79c6>:=</span> pull.<span style=color:#50fa7b>CloseSend</span>(); closeErr <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			p.logger.<span style=color:#50fa7b>Warnf</span>(<span style=color:#f1fa8c>&#34;could not close pull stream of topic %s: %v&#34;</span>, topic.Name, closeErr)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>cancel</span>()
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>cleanup</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;unable to subscribe: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	handle <span style=color:#ff79c6>:=</span> p.<span style=color:#50fa7b>adaptHandler</span>(streamCtx, pull, handler)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cleanup</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>			msg, err <span style=color:#ff79c6>:=</span> pull.<span style=color:#50fa7b>Recv</span>()
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>==</span> io.EOF { <span style=color:#6272a4>// no more messages
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>				<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>			<span style=color:#6272a4>// TODO reconnect on error
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>				p.logger.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to receive message: %v&#34;</span>, err)
+</span></span><span style=display:flex><span>				<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>			p.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;received message from stream on topic %s&#34;</span>, msg.TopicName)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>go</span> <span style=color:#50fa7b>handle</span>(msg)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>adaptHandler</code>是对hander的一个封装，主要作用是为了控制ack的时候的并发问题。可以看到这里通过闭包的方式创建了处理函数，持有同一个锁来控制并发。PS：这里通过锁控制在高并发情况下<strong>理论上</strong>容易发生惊群效应，引起CPU的升高，如果在使用中观察到这个现象，改成通过channel会好一点。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// adaptHandler returns a non-error function that handle the message with the given handler and ack when returns.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>//
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>//nolint:nosnakecase
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>grpcPubSub) <span style=color:#50fa7b>adaptHandler</span>(ctx context.Context, streamingPull proto.PubSub_PullMessagesClient, handler pubsub.Handler) messageHandler {
+</span></span><span style=display:flex><span>   safeSend <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>sync.Mutex{}
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(msg <span style=color:#ff79c6>*</span>proto.PullMessagesResponse) {
+</span></span><span style=display:flex><span>      m <span style=color:#ff79c6>:=</span> pubsub.NewMessage{
+</span></span><span style=display:flex><span>         Data:        msg.Data,
+</span></span><span style=display:flex><span>         ContentType: <span style=color:#ff79c6>&amp;</span>msg.ContentType,
+</span></span><span style=display:flex><span>         Topic:       msg.TopicName,
+</span></span><span style=display:flex><span>         Metadata:    msg.Metadata,
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#8be9fd;font-style:italic>var</span> ackError <span style=color:#ff79c6>*</span>proto.AckMessageError
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>handler</span>(ctx, <span style=color:#ff79c6>&amp;</span>m); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         p.logger.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error when handling message on topic %s&#34;</span>, msg.TopicName)
+</span></span><span style=display:flex><span>         ackError = <span style=color:#ff79c6>&amp;</span>proto.AckMessageError{
+</span></span><span style=display:flex><span>            Message: err.<span style=color:#50fa7b>Error</span>(),
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// As per documentation:
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// When using streams,
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// one must take care to avoid calling either SendMsg or RecvMsg multiple times against the same Stream from different goroutines.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// In other words, it&#39;s safe to have a goroutine calling SendMsg and another goroutine calling RecvMsg on the same stream at the same time.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// But it is not safe to call SendMsg on the same stream in different goroutines, or to call RecvMsg on the same stream in different goroutines.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// https://github.com/grpc/grpc-go/blob/master/Documentation/concurrency.md#streams
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      safeSend.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> safeSend.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> streamingPull.<span style=color:#50fa7b>Send</span>(<span style=color:#ff79c6>&amp;</span>proto.PullMessagesRequest{
+</span></span><span style=display:flex><span>         AckMessageId: msg.Id,
+</span></span><span style=display:flex><span>         AckError:     ackError,
+</span></span><span style=display:flex><span>      }); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         p.logger.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error when ack&#39;ing message %s from topic %s&#34;</span>, msg.Id, msg.TopicName)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h3 id=sdk>SDK</h3><h5 id=example及初始化>example及初始化</h5><p>对于SDK来说，可以注册运行多个pluggable componet实例，以名字作为唯一区分。注册也很简单，返回一个实现了对应component接口的实例就可以。例如以pubsub为例：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	dapr.<span style=color:#50fa7b>Register</span>(<span style=color:#f1fa8c>&#34;my-component-redis&#34;</span>, dapr.<span style=color:#50fa7b>WithPubSub</span>(<span style=color:#8be9fd;font-style:italic>func</span>() pubsub.PubSub {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>RedisComponent{}
+</span></span><span style=display:flex><span>	}))
+</span></span><span style=display:flex><span>	dapr.<span style=color:#50fa7b>MustRun</span>()
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>WithPubSub factory方法返回的是一个实现了contrib中定义的pubsub.PubSub接口的实例，这也是build-in的组件实现的接口。<code>pubsub.Register</code>会在后面介绍，主要就是将pubsub的实现与grpc server进行关联。mux是一个wrapper，主要为了用户在一个pluggable类型下定义了多个componet的情况进行隔离，每个有自己的实例。其逻辑比较简单，就是根据metadata中带的<code>*InstanceID*</code>来加载对应实例（上文说过这里会在runtime自动注入）这部分会纵向拉出来在后文中详细介绍。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>WithPubSub</span>(factory <span style=color:#8be9fd;font-style:italic>func</span>() pubsub.PubSub) option {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(cf <span style=color:#ff79c6>*</span>componentsOpts) {
+</span></span><span style=display:flex><span>      cf.useGrpcServer = <span style=color:#8be9fd;font-style:italic>append</span>(cf.useGrpcServer, <span style=color:#8be9fd;font-style:italic>func</span>(s <span style=color:#ff79c6>*</span>grpc.Server) {
+</span></span><span style=display:flex><span>         pubsub.<span style=color:#50fa7b>Register</span>(s, <span style=color:#50fa7b>mux</span>(factory))
+</span></span><span style=display:flex><span>      })
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>我们看下MustRun执行了哪些操作。这里会调用Run方法，遇到错误就退出。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// MustRun same as run but panics on error
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>MustRun</span>() {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>Run</span>(); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>panic</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Run根据环境变量获取socket文件夹，创建sock文件。每有一个withXXX就会创建一个，使用其名称作为文件名。然后针对每个注册的component调用runComponent来运行。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Run starts the component server.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Run</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	socketFolder, ok <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>LookupEnv</span>(unixSocketFolderPathEnvVar)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		socketFolder, ok = os.<span style=color:#50fa7b>LookupEnv</span>(fallbackUnixSocketFolderPathEnvVar)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>			socketFolder = defaultSocketFolder
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(factories) <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> ErrNoComponentsRegistered
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	done <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>chan</span> <span style=color:#8be9fd;font-style:italic>struct</span>{}, <span style=color:#8be9fd;font-style:italic>len</span>(factories))
+</span></span><span style=display:flex><span>	abort <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>makeAbortChan</span>(done)
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> cleanupGroup sync.WaitGroup
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> component <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> factories {
+</span></span><span style=display:flex><span>		socket <span style=color:#ff79c6>:=</span> filepath.<span style=color:#50fa7b>Join</span>(socketFolder, component<span style=color:#ff79c6>+</span><span style=color:#f1fa8c>&#34;.sock&#34;</span>)
+</span></span><span style=display:flex><span>		cleanupGroup.<span style=color:#50fa7b>Add</span>(<span style=color:#bd93f9>1</span>)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>(opts <span style=color:#ff79c6>*</span>componentsOpts) {
+</span></span><span style=display:flex><span>			err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>runComponent</span>(socket, opts, abort, <span style=color:#ff79c6>&amp;</span>cleanupGroup)
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>				svcLogger.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;aborting due to an error %v&#34;</span>, err)
+</span></span><span style=display:flex><span>				done <span style=color:#ff79c6>&lt;-</span> <span style=color:#8be9fd;font-style:italic>struct</span>{}{}
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>		}(factories[component])
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>done:
+</span></span><span style=display:flex><span>		cleanupGroup.<span style=color:#50fa7b>Wait</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>abort:
+</span></span><span style=display:flex><span>		cleanupGroup.<span style=color:#50fa7b>Wait</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>runComponent就是正常启动grpc server，然后会为其注册反射服务。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>runComponent</span>(socket <span style=color:#8be9fd>string</span>, opts <span style=color:#ff79c6>*</span>componentsOpts, abortChan <span style=color:#8be9fd;font-style:italic>chan</span> <span style=color:#8be9fd;font-style:italic>struct</span>{}, onFinish <span style=color:#ff79c6>*</span>sync.WaitGroup) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// remove socket if it is already created.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>Remove</span>(socket); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> <span style=color:#ff79c6>&amp;&amp;</span> !os.<span style=color:#50fa7b>IsNotExist</span>(err) {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	svcLogger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;using socket defined at &#39;%s&#39;&#34;</span>, socket)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	lis, err <span style=color:#ff79c6>:=</span> net.<span style=color:#50fa7b>Listen</span>(<span style=color:#f1fa8c>&#34;unix&#34;</span>, socket)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> lis.<span style=color:#50fa7b>Close</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	server <span style=color:#ff79c6>:=</span> grpc.<span style=color:#50fa7b>NewServer</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err = opts.<span style=color:#50fa7b>apply</span>(server); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>defer</span> onFinish.<span style=color:#50fa7b>Done</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>&lt;-</span>abortChan
+</span></span><span style=display:flex><span>		lis.<span style=color:#50fa7b>Close</span>()
+</span></span><span style=display:flex><span>	}()
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 将 grpc.Server 注册到反射服务中，这样在启动 gprc 反射服务后，那么就可以通过 reflection 包提供的反射服务查询 gRPC 服务及调用 gRPC 方法。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	reflection.<span style=color:#50fa7b>Register</span>(server)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> server.<span style=color:#50fa7b>Serve</span>(lis)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=pubsub>pubsub</h4><h5 id=包装>包装</h5><p>在上文中<code>example及初始化</code>部分略过了Register实际的处理。可以看到这里对传入的pubsub实例进行了代理包装，实现了GRPC server对应的方法，然后在对应的方法中获取组件实例（上面的mux方法），并调用实例对应的实际实现的逻辑方法。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Register the pubsub implementation for the component gRPC service.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Register</span>(server <span style=color:#ff79c6>*</span>grpc.Server, getInstance <span style=color:#8be9fd;font-style:italic>func</span>(context.Context) PubSub) {
+</span></span><span style=display:flex><span>   pubsub <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>pubsub{
+</span></span><span style=display:flex><span>      getInstance: getInstance,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   proto.<span style=color:#50fa7b>RegisterPubSubServer</span>(server, pubsub)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> pubsub <span style=color:#8be9fd;font-style:italic>struct</span> {
+</span></span><span style=display:flex><span>	proto.UnimplementedPubSubServer
+</span></span><span style=display:flex><span>	getInstance <span style=color:#8be9fd;font-style:italic>func</span>(context.Context) PubSub
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=init>Init</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>pubsub) <span style=color:#50fa7b>Init</span>(ctx context.Context, initReq <span style=color:#ff79c6>*</span>proto.PubSubInitRequest) (<span style=color:#ff79c6>*</span>proto.PubSubInitResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>proto.PubSubInitResponse{}, s.<span style=color:#50fa7b>getInstance</span>(ctx).<span style=color:#50fa7b>Init</span>(contribPubSub.Metadata{
+</span></span><span style=display:flex><span>      Base: contribMetadata.Base{Properties: initReq.Metadata.Properties},
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=ping>Ping</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>pubsub) <span style=color:#50fa7b>Ping</span>(context.Context, <span style=color:#ff79c6>*</span>proto.PingRequest) (<span style=color:#ff79c6>*</span>proto.PingResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>proto.PingResponse{}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=features>Features</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>pubsub) <span style=color:#50fa7b>Features</span>(ctx context.Context, _ <span style=color:#ff79c6>*</span>proto.FeaturesRequest) (<span style=color:#ff79c6>*</span>proto.FeaturesResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   features <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>proto.FeaturesResponse{
+</span></span><span style=display:flex><span>      Features: internal.<span style=color:#50fa7b>Map</span>(s.<span style=color:#50fa7b>getInstance</span>(ctx).<span style=color:#50fa7b>Features</span>(), <span style=color:#8be9fd;font-style:italic>func</span>(f contribPubSub.Feature) <span style=color:#8be9fd>string</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>string</span>(f)
+</span></span><span style=display:flex><span>      }),
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> features, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=publish-1>Publish</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>pubsub) <span style=color:#50fa7b>Publish</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>proto.PublishRequest) (<span style=color:#ff79c6>*</span>proto.PublishResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>proto.PublishResponse{}, s.<span style=color:#50fa7b>getInstance</span>(ctx).<span style=color:#50fa7b>Publish</span>(<span style=color:#ff79c6>&amp;</span>contribPubSub.PublishRequest{
+</span></span><span style=display:flex><span>      Data:        req.Data,
+</span></span><span style=display:flex><span>      PubsubName:  req.PubsubName,
+</span></span><span style=display:flex><span>      Topic:       req.Topic,
+</span></span><span style=display:flex><span>      Metadata:    req.Metadata,
+</span></span><span style=display:flex><span>      ContentType: <span style=color:#ff79c6>&amp;</span>req.ContentType,
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=pullmessages>PullMessages</h5><p>从客户端接收消息拉取请求，获取客户端传入的topic，订阅topic，将消息发到客户端处理，并进行ack。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>pubsub) <span style=color:#50fa7b>PullMessages</span>(stream proto.PubSub_PullMessagesServer) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 第一条消息是要订阅的topic，然后component开始发送，后面的收到的就都是ack的消息了。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   fstMessage, err <span style=color:#ff79c6>:=</span> stream.<span style=color:#50fa7b>Recv</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 拿到topic
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   topic <span style=color:#ff79c6>:=</span> fstMessage.<span style=color:#50fa7b>GetTopic</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> topic <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> ErrTopicNotSpecified
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   ctx, cancel <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>WithCancel</span>(stream.<span style=color:#50fa7b>Context</span>())
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cancel</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 这里是对handler和ack循环的封装
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   handler, startAckLoop <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>pullFor</span>(stream)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   err = s.<span style=color:#50fa7b>getInstance</span>(ctx).<span style=color:#50fa7b>Subscribe</span>(ctx, contribPubSub.SubscribeRequest{
+</span></span><span style=display:flex><span>      Topic:    topic.Name,
+</span></span><span style=display:flex><span>      Metadata: topic.Metadata,
+</span></span><span style=display:flex><span>   }, handler)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>startAckLoop</span>()
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>pullFor包含消息处理整体逻辑，就是调用handler往daprd发送，然后根据返回是否成功进行ack或者其他操作。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// pullFor creates a message handler for the given stream.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>pullFor</span>(stream proto.PubSub_PullMessagesServer) (pubsubHandler contribPubSub.Handler, acknLoop <span style=color:#8be9fd;font-style:italic>func</span>() <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// thread safe stream就是对收发消息加锁避免并发问题
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   tfStream <span style=color:#ff79c6>:=</span> internal.NewGRPCThreadSafeStream[proto.PullMessagesResponse, proto.PullMessagesRequest](stream)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ack管理助手
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   ackManager <span style=color:#ff79c6>:=</span> internal.NewAckManager[<span style=color:#8be9fd>error</span>]()
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// handler是业务处理wrapper，发出消息并等待消息的ack。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>handler</span>(tfStream, ackManager), <span style=color:#8be9fd;font-style:italic>func</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>     <span style=color:#6272a4>// 循环读取dapr运行时发回的ack信息，将ack信息发送到对应channel中。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>return</span> <span style=color:#50fa7b>ackLoop</span>(stream.<span style=color:#50fa7b>Context</span>(), tfStream, ackManager)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>此函数就是单个消息处理函数，发消息并等待异步ack，</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// handler build a pubsub handler using the given threadsafe stream and the ack manager.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handler</span>(tfStream internal.ThreadSafeStream[proto.PullMessagesResponse, proto.PullMessagesRequest], ackManager <span style=color:#ff79c6>*</span>internal.AcknowledgementManager[<span style=color:#8be9fd>error</span>]) contribPubSub.Handler {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(ctx context.Context, contribMsg <span style=color:#ff79c6>*</span>contribPubSub.NewMessage) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>     <span style=color:#6272a4>// 这里获取一个唯一msgID作为此次消息处理标识，在ackManager那里针对此标识创建pendingAck channel
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      msgID, pendingAck, cleanup <span style=color:#ff79c6>:=</span> ackManager.<span style=color:#50fa7b>Get</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cleanup</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      msg <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>proto.PullMessagesResponse{
+</span></span><span style=display:flex><span>         Data:        contribMsg.Data,
+</span></span><span style=display:flex><span>         TopicName:   contribMsg.Topic,
+</span></span><span style=display:flex><span>         Metadata:    contribMsg.Metadata,
+</span></span><span style=display:flex><span>         ContentType: internal.<span style=color:#50fa7b>ZeroValueIfNil</span>(contribMsg.ContentType),
+</span></span><span style=display:flex><span>         Id:          msgID,
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// in case of message can&#39;t be sent it does not mean that the sidecar didn&#39;t receive the message
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// it only means that the component wasn&#39;t able to receive the response back
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// it could leads in messages being acknowledged without even being pending first
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// we should ignore this since it will be probably retried by the underlying component.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>     <span style=color:#6272a4>// 发送到dapr runtime，这里的发送是加锁避免并发的
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      err <span style=color:#ff79c6>:=</span> tfStream.<span style=color:#50fa7b>Send</span>(msg)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> errors.<span style=color:#50fa7b>Wrapf</span>(err, <span style=color:#f1fa8c>&#34;error when sending message %s to consumer on topic %s&#34;</span>, msg.Id, msg.TopicName)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>        <span style=color:#6272a4>// 这里的err如果不出错的情况下是nil
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>case</span> err <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>pendingAck:
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>        <span style=color:#6272a4>// 这里说明如果要对单条消息做超时控制的话，要在调用handler的时候通过context控制。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>ctx.<span style=color:#50fa7b>Done</span>():
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> ErrAckTimeout
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这里获取一个唯一msgID作为此次消息处理标识，针对此标识创建pendingAck channel，以及返回清理函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>AcknowledgementManager[TAckResult]) <span style=color:#50fa7b>Get</span>() (messageID <span style=color:#8be9fd>string</span>, ackChan <span style=color:#8be9fd;font-style:italic>chan</span> TAckResult, cleanup <span style=color:#8be9fd;font-style:italic>func</span>()) {
+</span></span><span style=display:flex><span>   m.mu.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> m.mu.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>   msgID <span style=color:#ff79c6>:=</span> uuid.<span style=color:#50fa7b>New</span>().<span style=color:#50fa7b>String</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   ackChan = <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>chan</span> TAckResult, <span style=color:#bd93f9>1</span>)
+</span></span><span style=display:flex><span>   m.pendingAcks[msgID] = ackChan
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> msgID, ackChan, <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      m.mu.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>      <span style=color:#8be9fd;font-style:italic>delete</span>(m.pendingAcks, msgID)
+</span></span><span style=display:flex><span>      <span style=color:#8be9fd;font-style:italic>close</span>(ackChan)
+</span></span><span style=display:flex><span>      m.mu.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这个就是获取dapr runtime发过来的ack信息，然后发送到对应的channel上。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// ackLoop starts an active ack loop reciving acks from client.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>ackLoop</span>(streamCtx context.Context, tfStream internal.ThreadSafeStream[proto.PullMessagesResponse, proto.PullMessagesRequest], ackManager <span style=color:#ff79c6>*</span>internal.AcknowledgementManager[<span style=color:#8be9fd>error</span>]) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> streamCtx.<span style=color:#50fa7b>Err</span>() <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> streamCtx.<span style=color:#50fa7b>Err</span>()
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      ack, err <span style=color:#ff79c6>:=</span> tfStream.<span style=color:#50fa7b>Recv</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>==</span> io.EOF {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#8be9fd;font-style:italic>var</span> ackError <span style=color:#8be9fd>error</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> ack.AckError <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         ackError = errors.<span style=color:#50fa7b>New</span>(ack.AckError.Message)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>     <span style=color:#6272a4>// 这里注意ackError可能是nil
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> ackManager.<span style=color:#50fa7b>Ack</span>(ack.AckMessageId, ackError); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         pubsubLogger.<span style=color:#50fa7b>Warnf</span>(<span style=color:#f1fa8c>&#34;error %v when trying to notify ack&#34;</span>, err)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>就是在调用的时候尝试往对应的channel上发送消息，select中有两个注意点，一个在注释中已经说了，因为channel是有缓冲的，所以如果发消息发不进去的话首先一定是重复了，另外channel被关闭或者没有接收端在处理消息。所以这个地方的代码可以优化一下如果发不进去直接进default执行空动作就可以了。这里还有一个微小的风险是这里的c有在执行到的时候有被关闭的可能，虽然ack是顺序的，但是在Get函数中执行clean的时候会关闭channel。如果这里解锁之后发生切换恰巧执行超时ctx取消channel关闭，这里就可能panic。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>AcknowledgementManager[TAckResult]) <span style=color:#50fa7b>Ack</span>(messageID <span style=color:#8be9fd>string</span>, result TAckResult) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   m.mu.<span style=color:#50fa7b>RLock</span>()
+</span></span><span style=display:flex><span>   c, ok <span style=color:#ff79c6>:=</span> m.pendingAcks[messageID]
+</span></span><span style=display:flex><span>   m.mu.<span style=color:#50fa7b>RUnlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;message %s not found or not specified&#34;</span>, messageID)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// wait time for outstanding acks
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// that should be instantaneous as the channel is bufferized size 1
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// if this operation takes longer than the waitFunc (defaults to 1s)
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// it probably means that no consumer is waiting for the message ack
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// or it could be duplicated ack for the same message.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>m.<span style=color:#50fa7b>ackTimeoutFunc</span>():
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> c <span style=color:#ff79c6>&lt;-</span> result:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=为什么包装类是newinstance函数而不是instance实例>为什么包装类是newInstance函数而不是instance实例</h5><p>在源码中我们可以看到pubsub的wrapper结构体中并不是一个pubsub的结构体而是创建一个pubsub的方法。在注册pubsub的时候也是传入的创建pubsub的工厂方法。而在proto rpc方法被调用时会通过<code>s.getInstance(ctx)</code>来获取实例，如果工厂类没有经过任何封装的话，那么每次都是一个新的实例。相关函数如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// 
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>type</span> pubsub <span style=color:#8be9fd;font-style:italic>struct</span> {
+</span></span><span style=display:flex><span>	proto.UnimplementedPubSubServer
+</span></span><span style=display:flex><span>	getInstance <span style=color:#8be9fd;font-style:italic>func</span>(context.Context) PubSub
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// 这里注册时传入的工厂方法经过了mux的封装
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>WithPubSub</span>(factory <span style=color:#8be9fd;font-style:italic>func</span>() pubsub.PubSub) option {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(cf <span style=color:#ff79c6>*</span>componentsOpts) {
+</span></span><span style=display:flex><span>      cf.useGrpcServer = <span style=color:#8be9fd;font-style:italic>append</span>(cf.useGrpcServer, <span style=color:#8be9fd;font-style:italic>func</span>(s <span style=color:#ff79c6>*</span>grpc.Server) {
+</span></span><span style=display:flex><span>         pubsub.<span style=color:#50fa7b>Register</span>(s, <span style=color:#50fa7b>mux</span>(factory))
+</span></span><span style=display:flex><span>      })
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// 每次方法调用的时候都通过getInstance来获取实例。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>pubsub) <span style=color:#50fa7b>Init</span>(ctx context.Context, initReq <span style=color:#ff79c6>*</span>proto.PubSubInitRequest) (<span style=color:#ff79c6>*</span>proto.PubSubInitResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>proto.PubSubInitResponse{}, s.<span style=color:#50fa7b>getInstance</span>(ctx).<span style=color:#50fa7b>Init</span>(contribPubSub.Metadata{
+</span></span><span style=display:flex><span>      Base: contribMetadata.Base{Properties: initReq.Metadata.Properties},
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>那么就是在<code>mux</code>方法中缓存了实例，通过方法源码我们可以看到，通过map持有多个实例，通过锁来控制instance单例的创建。这里之所以不是用一个实例，而是通过mux包装后的方法来获取实例，是为了为不同的component instance创建不同的实例。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> mux[TComponent any](new <span style=color:#8be9fd;font-style:italic>func</span>() TComponent) <span style=color:#8be9fd;font-style:italic>func</span>(context.Context) TComponent {
+</span></span><span style=display:flex><span>   instances <span style=color:#ff79c6>:=</span> sync.Map{}
+</span></span><span style=display:flex><span>   firstLoad <span style=color:#ff79c6>:=</span> sync.Mutex{}
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(ctx context.Context) TComponent {
+</span></span><span style=display:flex><span>      instanceID <span style=color:#ff79c6>:=</span> <span style=color:#f1fa8c>&#34;#default__instance#&#34;</span>
+</span></span><span style=display:flex><span>      metadata, ok <span style=color:#ff79c6>:=</span> metadata.<span style=color:#50fa7b>FromIncomingContext</span>(ctx)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> ok {
+</span></span><span style=display:flex><span>         instanceIDs <span style=color:#ff79c6>:=</span> metadata.<span style=color:#50fa7b>Get</span>(metadataInstanceID)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(instanceIDs) <span style=color:#ff79c6>!=</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>            instanceID = instanceIDs[<span style=color:#bd93f9>0</span>]
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      instance, ok <span style=color:#ff79c6>:=</span> instances.<span style=color:#50fa7b>Load</span>(instanceID)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>         firstLoad.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>defer</span> firstLoad.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>         instance, ok = instances.<span style=color:#50fa7b>Load</span>(instanceID) <span style=color:#6272a4>// double check lock
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>if</span> ok {
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span> instance.(TComponent)
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         instance = <span style=color:#8be9fd;font-style:italic>new</span>()
+</span></span><span style=display:flex><span>         instances.<span style=color:#50fa7b>Store</span>(instanceID, instance)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> instance.(TComponent)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在什么情况下会发生这种情况呢？在为application配置component的时候有多个component都是此Pluggable component类型的时候。例如下图所示：</p><p><img src=https://user-images.githubusercontent.com/5839364/193684998-5d891e78-4b32-4784-8091-206af4c5cf94.png alt=image></p><h3 id=injector>Injector</h3><p>在启动一个具有Pluggable component的服务的时候，需要确保Pluggable component和daprd挂载了相同的UDS 文件夹，以便可以相互访问。</p><h5 id=挂载>挂载</h5><p><code>dapr.io/unix-domain-socket-path</code></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (i <span style=color:#ff79c6>*</span>injector) <span style=color:#50fa7b>getPodPatchOperations</span>(ar <span style=color:#ff79c6>*</span>v1.AdmissionReview,
+</span></span><span style=display:flex><span>   namespace, image, imagePullPolicy <span style=color:#8be9fd>string</span>, kubeClient kubernetes.Interface, daprClient scheme.Interface,
+</span></span><span style=display:flex><span>) (patchOps []sidecar.PatchOperation, err <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   req <span style=color:#ff79c6>:=</span> ar.Request
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// ... 格式数据检查
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// 为pod设置uds的volume定义，整合volumeMounts给sidecar用
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   volumeMounts <span style=color:#ff79c6>:=</span> sidecar.<span style=color:#50fa7b>GetVolumeMounts</span>(pod)
+</span></span><span style=display:flex><span>   socketVolumeMount <span style=color:#ff79c6>:=</span> sidecar.<span style=color:#50fa7b>GetUnixDomainSocketVolumeMount</span>(<span style=color:#ff79c6>&amp;</span>pod)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> socketVolumeMount <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      volumeMounts = <span style=color:#8be9fd;font-style:italic>append</span>(volumeMounts, <span style=color:#ff79c6>*</span>socketVolumeMount)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   volumeMounts = <span style=color:#8be9fd;font-style:italic>append</span>(volumeMounts, corev1.VolumeMount{
+</span></span><span style=display:flex><span>      Name:      sidecar.TokenVolumeName,
+</span></span><span style=display:flex><span>      MountPath: sidecar.TokenVolumeKubernetesMountPath,
+</span></span><span style=display:flex><span>      ReadOnly:  <span style=color:#ff79c6>true</span>,
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// App containers和 Pluggable区分开来,以及根据`dapr.io/inject-pluggable-components`注解进行自动注入。这两个函数都比较关键会在后面介绍。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   appContainers, componentContainers, injectedComponentContainers, err <span style=color:#ff79c6>:=</span> i.<span style=color:#50fa7b>splitContainers</span>(pod)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	componentPatchOps, componentsSocketVolumeMount <span style=color:#ff79c6>:=</span> components.<span style=color:#50fa7b>PatchOps</span>(componentContainers, injectedComponentContainers, <span style=color:#ff79c6>&amp;</span>pod)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 生成sidecar容器，注入volumeMounts
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   sidecarContainer, err <span style=color:#ff79c6>:=</span> sidecar.<span style=color:#50fa7b>GetSidecarContainer</span>(sidecar.ContainerConfig{
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      VolumeMounts:                 volumeMounts,
+</span></span><span style=display:flex><span>      ComponentsSocketsVolumeMount: componentsSocketVolumeMount,
+</span></span><span style=display:flex><span>      RunAsNonRoot:                 i.config.<span style=color:#50fa7b>GetRunAsNonRoot</span>(),
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Create the list of patch operations
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   patchOps = []sidecar.PatchOperation{}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// patch sidecar 容器
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   patchOps = <span style=color:#8be9fd;font-style:italic>append</span>(patchOps,
+</span></span><span style=display:flex><span>      sidecar.PatchOperation{
+</span></span><span style=display:flex><span>         Op:    <span style=color:#f1fa8c>&#34;add&#34;</span>,
+</span></span><span style=display:flex><span>         Path:  sidecar.PatchPathContainers <span style=color:#ff79c6>+</span> <span style=color:#f1fa8c>&#34;/-&#34;</span>,
+</span></span><span style=display:flex><span>         Value: sidecarContainer,
+</span></span><span style=display:flex><span>      },
+</span></span><span style=display:flex><span>      sidecar.<span style=color:#50fa7b>AddDaprEnvVarsToContainers</span>(appContainers)<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 为app容器添加socket volume mount
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   patchOps = <span style=color:#8be9fd;font-style:italic>append</span>(patchOps,
+</span></span><span style=display:flex><span>      sidecar.<span style=color:#50fa7b>AddSocketVolumeMountToContainers</span>(appContainers, socketVolumeMount)<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 这里为 pod 添加 Pluggable 的 volume 以及给 component pod 添加 volume mount
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   patchOps = <span style=color:#8be9fd;font-style:italic>append</span>(patchOps, componentPatchOps<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>return</span> patchOps, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>splitContainers</code>函数根据pod定义是否包含<code>dapr.io/inject-pluggable-components</code>注解来决定是否启用自动注入pluggable container。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (i <span style=color:#ff79c6>*</span>injector) <span style=color:#50fa7b>splitContainers</span>(pod corev1.Pod) (appContainers <span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>int</span>]corev1.Container, componentContainers <span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>int</span>]corev1.Container, injectedComponentContainers []corev1.Container, err <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	an <span style=color:#ff79c6>:=</span> annotations.<span style=color:#50fa7b>New</span>(pod.Annotations)
+</span></span><span style=display:flex><span>	injectionEnabled <span style=color:#ff79c6>:=</span> an.<span style=color:#50fa7b>GetBoolOrDefault</span>(annotations.KeyPluggableComponentsInjection, <span style=color:#ff79c6>false</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> injectionEnabled {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 列出namespace下的所有component
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		componentsList, err, _ <span style=color:#ff79c6>:=</span> namespaceFlight.<span style=color:#50fa7b>Do</span>(pod.Namespace, <span style=color:#8be9fd;font-style:italic>func</span>() (any, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> i.daprClient.<span style=color:#50fa7b>ComponentsV1alpha1</span>().<span style=color:#50fa7b>Components</span>(pod.Namespace).<span style=color:#50fa7b>List</span>(metav1.ListOptions{})
+</span></span><span style=display:flex><span>		})
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, <span style=color:#ff79c6>nil</span>, <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error when fetching components: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 自动注入pluggable container
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		injectedComponentContainers = components.<span style=color:#50fa7b>Injectable</span>(an.<span style=color:#50fa7b>GetString</span>(annotations.KeyAppID), componentsList.(<span style=color:#ff79c6>*</span>v1alpha1.ComponentList).Items)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// pod注解`dapr.io/pluggable-components`中以`,`分割了pluggable component的container名称。将它们筛选出来就是`componentContainers`.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	appContainers, componentContainers = components.<span style=color:#50fa7b>SplitContainers</span>(pod)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>Injectable</code>函数会筛选出来所有带有<code>dapr.io/component-container</code>注解的，限定app-id列表中包含自己，或者未限定的，将其<code>dapr.io/inject-pluggable-components</code>定义解析后自动注入进来。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Injectable parses the container definition from components annotations returning them as a list. Uses the appID to filter
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// only the eligble components for such apps avoiding injecting containers that will not be used.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Injectable</span>(appID <span style=color:#8be9fd>string</span>, components []componentsapi.Component) []corev1.Container {
+</span></span><span style=display:flex><span>	componentContainers <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>([]corev1.Container, <span style=color:#bd93f9>0</span>)
+</span></span><span style=display:flex><span>	componentImages <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>string</span>]<span style=color:#8be9fd>bool</span>, <span style=color:#bd93f9>0</span>)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 遍历所有components
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>for</span> _, component <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> components {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// component是否包含dapr.io/component-container注解，这里定义了PluggableComponentContainer基本信息
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		containerAsStr <span style=color:#ff79c6>:=</span> component.Annotations[annotations.KeyPluggableComponentContainer]
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> containerAsStr <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 反序列化成k8s Container
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#8be9fd;font-style:italic>var</span> container <span style=color:#ff79c6>*</span>corev1.Container
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> json.<span style=color:#50fa7b>Unmarshal</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(containerAsStr), <span style=color:#ff79c6>&amp;</span>container); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			log.<span style=color:#50fa7b>Warnf</span>(<span style=color:#f1fa8c>&#34;could not unmarshal %s error: %v&#34;</span>, component.Name, err)
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// 如果已经处理过了，一个镜像只需要启动一个实例。因为一个component可能会包含了多个pluggable。这样如果每个component中都定义了这个，就需要去重，因为需且只需启动一份实例。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> componentImages[container.Image] {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// 是否限定了app，如果限定了就需要包含自己才需要注入
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		appScopped <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>len</span>(component.Scopes) <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>for</span> _, scoppedApp <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> component.Scopes {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> scoppedApp <span style=color:#ff79c6>==</span> appID {
+</span></span><span style=display:flex><span>				appScopped = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>				<span style=color:#ff79c6>break</span>
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// container加入定义中
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> appScopped {
+</span></span><span style=display:flex><span>			componentImages[container.Image] = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>			<span style=color:#6272a4>// if container name is not set, the component name will be used ensuring uniqueness
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#ff79c6>if</span> container.Name <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>				container.Name = component.Name
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>			componentContainers = <span style=color:#8be9fd;font-style:italic>append</span>(componentContainers, <span style=color:#ff79c6>*</span>container)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> componentContainers
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>计算Patch信息，volume、VolumeMounts、环境变量等。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// PatchOps returns the patch operations required to properly bootstrap the pluggable component and the respective volume mount for the sidecar.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>PatchOps</span>(componentContainers <span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>int</span>]corev1.Container, injectedContainers []corev1.Container, pod <span style=color:#ff79c6>*</span>corev1.Pod) ([]patcher.PatchOperation, <span style=color:#ff79c6>*</span>corev1.VolumeMount) {
+</span></span><span style=display:flex><span>	patches <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>([]patcher.PatchOperation, <span style=color:#bd93f9>0</span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// check ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 获取Pluggable Components Sockets文件夹，优先级为annotation、env、默认值。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	podAnnotations <span style=color:#ff79c6>:=</span> annotations.<span style=color:#50fa7b>New</span>(pod.Annotations)
+</span></span><span style=display:flex><span>	mountPath <span style=color:#ff79c6>:=</span> podAnnotations.<span style=color:#50fa7b>GetString</span>(annotations.KeyPluggableComponentsSocketsFolder)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> mountPath <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 尝试从`DAPR_COMPONENTS_SOCKETS_FOLDER`环境变量中取，还取不到就用默认值`/tmp/dapr-components-sockets`
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		mountPath = pluggable.<span style=color:#50fa7b>GetSocketFolderPath</span>()
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 为pod添加socket 使用的volume
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	volumePatch, sharedSocketVolumeMount <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>addSharedSocketVolume</span>(mountPath, pod)
+</span></span><span style=display:flex><span>	patches = <span style=color:#8be9fd;font-style:italic>append</span>(patches, volumePatch)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 将路径设置到`DAPR_COMPONENT_SOCKETS_FOLDER`环境变量
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	componentsEnvVars <span style=color:#ff79c6>:=</span> []corev1.EnvVar{{
+</span></span><span style=display:flex><span>		Name:  componentsUnixDomainSocketMountPathEnvVar,
+</span></span><span style=display:flex><span>		Value: sharedSocketVolumeMount.MountPath,
+</span></span><span style=display:flex><span>	}}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> idx, container <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> componentContainers {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 添加env和volumeMount，仅添加不与container本身定义中冲突的部分。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		patches = <span style=color:#8be9fd;font-style:italic>append</span>(patches, patcher.<span style=color:#50fa7b>GetEnvPatchOperations</span>(container.Env, componentsEnvVars, idx)<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>		patches = <span style=color:#8be9fd;font-style:italic>append</span>(patches, patcher.<span style=color:#50fa7b>GetVolumeMountPatchOperations</span>(container.VolumeMounts, []corev1.VolumeMount{sharedSocketVolumeMount}, idx)<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	podVolumes <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>string</span>]<span style=color:#8be9fd>bool</span>, <span style=color:#8be9fd;font-style:italic>len</span>(pod.Spec.Volumes))
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> _, volume <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> pod.Spec.Volumes {
+</span></span><span style=display:flex><span>		podVolumes[volume.Name] = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> _, container <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> injectedContainers {
+</span></span><span style=display:flex><span>		container.Env = <span style=color:#8be9fd;font-style:italic>append</span>(container.Env, componentsEnvVars<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// mount volume as empty dir by default.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		patches = <span style=color:#8be9fd;font-style:italic>append</span>(patches, <span style=color:#50fa7b>emptyVolumePatches</span>(container, podVolumes, pod)<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>		container.VolumeMounts = <span style=color:#8be9fd;font-style:italic>append</span>(container.VolumeMounts, sharedSocketVolumeMount)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		patches = <span style=color:#8be9fd;font-style:italic>append</span>(patches, patcher.PatchOperation{
+</span></span><span style=display:flex><span>			Op:    <span style=color:#f1fa8c>&#34;add&#34;</span>,
+</span></span><span style=display:flex><span>			Path:  patcher.PatchPathContainers <span style=color:#ff79c6>+</span> <span style=color:#f1fa8c>&#34;/-&#34;</span>,
+</span></span><span style=display:flex><span>			Value: container,
+</span></span><span style=display:flex><span>		})
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> patches, <span style=color:#ff79c6>&amp;</span>sharedSocketVolumeMount
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=volume>volume</h5><p>添加共享socket volume到pod定义中。sharedSocketVolumeMount的添加在patch里。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>addSharedSocketVolume</span>(mountPath <span style=color:#8be9fd>string</span>, pod <span style=color:#ff79c6>*</span>corev1.Pod) (sidecar.PatchOperation, corev1.VolumeMount) {
+</span></span><span style=display:flex><span>	sharedSocketVolume <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>sharedComponentsSocketVolume</span>()
+</span></span><span style=display:flex><span>	sharedSocketVolumeMount <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>sharedComponentsUnixSocketVolumeMount</span>(mountPath)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> volumePatch sidecar.PatchOperation
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(pod.Spec.Volumes) <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>		volumePatch = sidecar.PatchOperation{
+</span></span><span style=display:flex><span>			Op:    <span style=color:#f1fa8c>&#34;add&#34;</span>,
+</span></span><span style=display:flex><span>			Path:  sidecar.PatchPathVolumes,
+</span></span><span style=display:flex><span>			Value: []corev1.Volume{sharedSocketVolume},
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		volumePatch = sidecar.PatchOperation{
+</span></span><span style=display:flex><span>			Op:    <span style=color:#f1fa8c>&#34;add&#34;</span>,
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// 如果已经存在的话就是添加到一个已经存在的数组里
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			Path:  sidecar.PatchPathVolumes <span style=color:#ff79c6>+</span> <span style=color:#f1fa8c>&#34;/-&#34;</span>,
+</span></span><span style=display:flex><span>			Value: sharedSocketVolume,
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// volume添加到pod
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	pod.Spec.Volumes = <span style=color:#8be9fd;font-style:italic>append</span>(pod.Spec.Volumes, sharedSocketVolume)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> volumePatch, sharedSocketVolumeMount
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Volume和VolumeMount定义</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// sharedComponentsSocketVolume creates a shared unix socket volume to be used by sidecar.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>sharedComponentsSocketVolume</span>() corev1.Volume {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> corev1.Volume{
+</span></span><span style=display:flex><span>		Name: componentsUnixDomainSocketVolumeName,<span style=color:#6272a4>//&#34;dapr-components-unix-domain-socket&#34;
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		VolumeSource: corev1.VolumeSource{
+</span></span><span style=display:flex><span>			EmptyDir: <span style=color:#ff79c6>&amp;</span>corev1.EmptyDirVolumeSource{},
+</span></span><span style=display:flex><span>		},
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// sharedComponentsUnixSocketVolumeMount creates a shared unix socket volume mount to be used by pluggable component.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>sharedComponentsUnixSocketVolumeMount</span>(mountPath <span style=color:#8be9fd>string</span>) corev1.VolumeMount {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> corev1.VolumeMount{
+</span></span><span style=display:flex><span>		Name:      componentsUnixDomainSocketVolumeName,<span style=color:#6272a4>//&#34;dapr-components-unix-domain-socket&#34;
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		MountPath: mountPath,
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Tip: unix domain socket与Pluggable component共用同一个volume，因为Pluggable discovery在初始化阶段，然后才会初始化http和GRPC server，所以一起用应该是没有影响的。</p><p>参考</p><p>介绍文档https://docs.dapr.io/developing-applications/develop-components/pluggable-components/</p><p>overview <a href=https://docs.dapr.io/developing-applications/develop-components/pluggable-components/pluggable-components-overview/>https://docs.dapr.io/developing-applications/develop-components/pluggable-components/pluggable-components-overview/</a></p><p>Register a pluggable component <a href=https://docs.dapr.io/operations/components/pluggable-components-registration/>https://docs.dapr.io/operations/components/pluggable-components-registration/</a></p><p><a href=https://github.com/dapr/dapr/pull/5406/files>https://github.com/dapr/dapr/pull/5406/files</a></p><p>new injector pr <a href=https://github.com/dapr/dapr/pull/5935/files>https://github.com/dapr/dapr/pull/5935/files</a></p><p>pluggable component annotionshttps://github.com/dapr/dapr/issues/5668</p><p>初步提出prhttps://github.com/dapr/dapr/issues/3787</p><p>完善prhttps://github.com/dapr/dapr/issues/4925</p><p><a href=https://docs.dapr.io/operations/components/pluggable-components-registration/>https://docs.dapr.io/operations/components/pluggable-components-registration/</a></p><p><a href=https://github.com/dapr/dapr/pull/4348>https://github.com/dapr/dapr/pull/4348</a></p><p><a href=https://github.com/dapr/dapr/issues/5402>https://github.com/dapr/dapr/issues/5402</a></p><p>进行中pr</p><p><a href=https://github.com/dapr/dapr/pull/6202>https://github.com/dapr/dapr/pull/6202</a> 允许daprd等待/重试 pluggable组件的注册和初始化</p><hr><ul class=pager><li class=previous><a href=/2023/02/11/2023-02-11-spin-up-sourcecode.md/ data-toggle=tooltip data-placement=top title="Spin up 源码分析">&larr;
+Previous Post</a></li><li class=next><a href=/2023/03/16/2023-03-16-deploying-pluggable-k8s.md/ data-toggle=tooltip data-placement=top title="Deploying Dapr Pluggable Component In K8s">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

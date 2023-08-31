@@ -1,0 +1,111 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Debug Dapr In K8s"><meta property="og:title" content="Debug Dapr In K8s"><meta property="twitter:title" content="Debug Dapr In K8s"><meta name=description content="介绍如何在k8s环境中调试dapr sidecar"><meta property="og:description" content="介绍如何在k8s环境中调试dapr sidecar"><meta property="twitter:description" content="介绍如何在k8s环境中调试dapr sidecar"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Debug Dapr In K8s | 张超的博客 | Taction Blog</title><link rel=canonical href=/2023/03/17/2023-03-17-debug-dapr-k8s.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/dapr title=dapr>dapr</a></div><h1>Debug Dapr In K8s</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Friday, March 17, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h3 id=准备工作>准备工作</h3><h4 id=编译>编译</h4><p>拉代码构建二进制,这里面最主要的就是<code>DEBUG=1</code>dapr里只要加了这个，构建二进制的时候就会构建附带debugger信息的二进制版本。</p><pre tabindex=0><code>git clone https://github.com/dapr/dapr.git
+cd dapr
+make release GOOS=linux GOARCH=amd64 DEBUG=1
+</code></pre><h4 id=构建镜像>构建镜像</h4><p>构建debug镜像，推送到自己的私有仓库。如果你在国内环境运行，在构建镜像时需要安装dlv，如果遇到连接GitHub的网络问题，你可以修改<code>./docker/Dockerfile-debug</code>,添加一行<code>ENV GOPROXY https://goproxy.cn,direct</code>设置一下代理即可。</p><pre tabindex=0><code>export DAPR_TAG=dev
+export DAPR_REGISTRY=&lt;your docker.io id&gt;
+docker login
+make docker-push DEBUG=1
+</code></pre><h4 id=安装>安装</h4><p>安装dapr debugging 二进制</p><p>如果你已经安装了，你需要先卸载</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span>dapr uninstall -k
+</span></span></code></pre></div><p>然后通过helm的方式安装新构建的dapr，首先添加helm repo并且update.</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>// Add the official Dapr Helm chart.
+</span></span><span style=display:flex><span>helm repo add dapr https://dapr.github.io/helm-charts/
+</span></span><span style=display:flex><span>// Or also add a private Dapr Helm chart.
+</span></span><span style=display:flex><span>helm repo add dapr http://helm.custom-domain.com/dapr/dapr/ <span style=color:#f1fa8c>\
+</span></span></span><span style=display:flex><span><span style=color:#f1fa8c></span>   --username<span style=color:#ff79c6>=</span>xxx --password<span style=color:#ff79c6>=</span>xxx
+</span></span><span style=display:flex><span>helm repo update
+</span></span><span style=display:flex><span><span style=color:#6272a4># See which chart versions are available</span>
+</span></span><span style=display:flex><span>helm search repo dapr --devel --versions
+</span></span></code></pre></div><h3 id=dubug-控制面>Dubug 控制面</h3><p>新建一个values.yml文件，要对哪个组件启动debug就把对应组件的debug.enable改为true.可以选择的组件有<code> dapr_operator dapr_placement dapr_sentry dapr_sidecar_injector</code></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span><span style=color:#ff79c6>global</span>:
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>registry</span>: docker.io/&lt;your docker.io id&gt;
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>tag</span>: <span style=color:#f1fa8c>&#34;dev-linux-amd64&#34;</span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>dapr_operator</span>:
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>debug</span>:
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>enabled</span>: <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>initialDelaySeconds</span>: <span style=color:#bd93f9>20</span>
+</span></span></code></pre></div><p>然后通过helm命令安装</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>helm install dapr dapr/dapr --namespace dapr-system --create-namespace --values values.yml --wait
+</span></span></code></pre></div><p>如果你已经安装过了debug版本的控制面，你可以通过更新的方式将某个控制面组件开启调试模式</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>helm upgrade dapr dapr/dapr --namespace dapr-system --install --reuse-values --set dapr_sidecar_injector.debug.enabled<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>true</span>
+</span></span></code></pre></div><p>查看待调试的程序pod名称：</p><pre tabindex=0><code>$ kubectl get pods -n dapr-system
+NAME                                     READY   STATUS    RESTARTS   AGE
+dapr-dashboard-5f75457f45-r7f22          1/1     Running   0          20m
+dapr-operator-78b867bcc6-sgjvq           1/1     Running   0          20m
+dapr-placement-server-0                  1/1     Running   0          32m
+dapr-sentry-85bcddcf6b-vjndf             1/1     Running   0          20m
+dapr-sidecar-injector-56cd4c8cf7-nm49f   0/1     Running   0          11s
+</code></pre><p>将调试端口转发出来，如果这条命令不是在你的本机执行，你可以添加<code>--address '0.0.0.0' </code>来使转发的端口远程可访问。注意将下面转发的pod名称改为实际的pod名称。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span> kubectl port-forward dapr-sidecar-injector-56cd4c8cf7-nm49f 40000:40000 -n dapr-system
+</span></span></code></pre></div><p>好了！现在你可以使用你最喜欢的IDE来进行远程调试了。以goland的为例，你可以进行如下配置：</p><p><img src=https://image-1255620078.cos.ap-nanjing.myqcloud.com/image-20230320172928080.png alt=image-20230320172928080></p><h4 id=注意>注意</h4><h5 id=liveness-probe>liveness probe</h5><p>推荐手动修改对应的deployment,去掉liveness probe。dapr的控制面默认都是配置了k8s liveness probe的，如果你在调试过程中，</p><h5 id=initialdelayseconds>initialDelaySeconds</h5><p>你会注意到给的样例values.yaml文件中含有<code>initialDelaySeconds</code> 这个值。<code>initialDelaySeconds</code> 字段告诉 kubelet 在执行第一次探测前应该等待多少秒。在去掉liveness probe的情况下我一般把这个值设置为30.</p><h3 id=debug-daprd>debug daprd</h3><h5 id=安装-1>安装</h5><blockquote><p>这里是按照目前的官网教程来的，其实如果你已经安装了dapr的情况下这一步可以略过。</p></blockquote><p>新建一个values.yml文件，写入以下内容</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span><span style=color:#ff79c6>global</span>:
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>registry</span>: docker.io/&lt;your docker.io id&gt;
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>tag</span>: <span style=color:#f1fa8c>&#34;dev-linux-amd64&#34;</span>
+</span></span></code></pre></div><p>然后通过helm命令安装</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>helm install dapr dapr/dapr --namespace dapr-system --create-namespace --values values.yml --wait
+</span></span></code></pre></div><h5 id=部署debug的daprd>部署debug的daprd</h5><p>为想要debug daprd的容器添加<code>dapr.io/enable-debug: "true"</code>annotions，以<a href=https://github.com/dapr/quickstarts/tree/master/tutorials/hello-kubernetes>quickstarts/hello-kubernetes</a>为例介绍如果想要debug某个app对应的daprd应该如何操作。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-diff data-lang=diff><span style=display:flex><span><span style=font-weight:700>diff --git a/tutorials/hello-kubernetes/deploy/node.yaml b/tutorials/hello-kubernetes/deploy/node.yaml
+</span></span></span><span style=display:flex><span><span style=font-weight:700>index c63d06d..5bd50af 100644
+</span></span></span><span style=display:flex><span><span style=font-weight:700></span><span style=color:#f55>--- a/tutorials/hello-kubernetes/deploy/node.yaml
+</span></span></span><span style=display:flex><span><span style=color:#f55></span><span style=color:#50fa7b;font-weight:700>+++ b/tutorials/hello-kubernetes/deploy/node.yaml
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700></span><span style=font-weight:700>@@ -31,6 +31,7 @@ spec:
+</span></span></span><span style=display:flex><span><span style=font-weight:700></span>         app: node
+</span></span><span style=display:flex><span>       annotations:
+</span></span><span style=display:flex><span>         dapr.io/enabled: &#34;true&#34;
+</span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+        dapr.io/sidecar-liveness-probe-delay-seconds: &#34;3000&#34;
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+        dapr.io/enable-debug: &#34;true&#34;
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700></span>         dapr.io/app-id: &#34;nodeapp&#34;
+</span></span><span style=display:flex><span>         dapr.io/app-port: &#34;3000&#34;
+</span></span><span style=display:flex><span>         dapr.io/enable-api-logging: &#34;true&#34;
+</span></span></code></pre></div><p>实际上这里可以通过添加<code>dapr.io/sidecar-image: "your daprd image"</code>来指定使用的daprd镜像。</p><h5 id=查看pod名称>查看pod名称</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>$ k get po
+</span></span><span style=display:flex><span>NAME                       READY   STATUS    RESTARTS        AGE
+</span></span><span style=display:flex><span>nodeapp-6f558dd569-95lms   1/2     Running   <span style=color:#bd93f9>7</span> <span style=color:#ff79c6>(</span>2m24s ago<span style=color:#ff79c6>)</span>   8m8s
+</span></span><span style=display:flex><span>redis-master-0             1/1     Running   <span style=color:#bd93f9>0</span>               4d22h
+</span></span><span style=display:flex><span>redis-replicas-0           1/1     Running   <span style=color:#bd93f9>0</span>               4d22h
+</span></span><span style=display:flex><span>redis-replicas-1           1/1     Running   <span style=color:#bd93f9>0</span>               4d22h
+</span></span><span style=display:flex><span>redis-replicas-2           1/1     Running   <span style=color:#bd93f9>0</span>               4d22h
+</span></span></code></pre></div><h5 id=port-forward>port-forward</h5><p>如果你本地机器有kubeconfig文件，那么你可以在本地执行</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>$ kubectl port-forward nodeapp-6f558dd569-95lms 40000:40000
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Forwarding from 127.0.0.1:40000 -&gt; <span style=color:#bd93f9>40000</span>
+</span></span><span style=display:flex><span>Forwarding from <span style=color:#ff79c6>[</span>::1<span style=color:#ff79c6>]</span>:40000 -&gt; <span style=color:#bd93f9>40000</span>
+</span></span></code></pre></div><p>如果你在本地没有kubeconfig，但是你可以连接到某个有kubeconfig的机器,那么你就需要将port forward之后的端口设置为公网可访问，以便你可以从本地机器上连接。</p><pre tabindex=0><code>$ kubectl port-forward nodeapp-6f558dd569-95lms --address=&#39;0.0.0.0&#39; 40000:40000
+
+Forwarding from 127.0.0.1:40000 -&gt; 40000
+Forwarding from [::1]:40000 -&gt; 40000
+</code></pre><h5 id=ide-remote-debug>IDE remote debug</h5><p>这里就可以用你喜欢的IDE来remote debug了。具体步骤和配置与<strong>Dubug 控制面</strong>一样，因为dapr的调试端口都是40000.</p><h5 id=发送请求并调试>发送请求并调试</h5><p>将dapr端口暴露出来</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-diff data-lang=diff><span style=display:flex><span><span style=font-weight:700>diff --git a/tutorials/hello-kubernetes/deploy/debug.yaml b/tutorials/hello-kubernetes/deploy/debug.yaml
+</span></span></span><span style=display:flex><span><span style=font-weight:700>index c63d06d..d0a547c 100644
+</span></span></span><span style=display:flex><span><span style=font-weight:700></span><span style=color:#f55>--- a/tutorials/hello-kubernetes/deploy/debug.yaml
+</span></span></span><span style=display:flex><span><span style=color:#f55></span><span style=color:#50fa7b;font-weight:700>+++ b/tutorials/hello-kubernetes/deploy/debug.yaml
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700></span><span style=font-weight:700>@@ -11,6 +11,11 @@ spec:
+</span></span></span><span style=display:flex><span><span style=font-weight:700></span>   - protocol: TCP
+</span></span><span style=display:flex><span>     port: 80
+</span></span><span style=display:flex><span>     targetPort: 3000
+</span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+    name: node
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+  - protocol: TCP
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+    port: 3500
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+    targetPort: 3500
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700>+    name: dapr-http
+</span></span></span><span style=display:flex><span><span style=color:#50fa7b;font-weight:700></span>   type: LoadBalancer
+</span></span></code></pre></div><p>将dapr端口转发到本地</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>kubectl port-forward service/nodeapp --address<span style=color:#ff79c6>=</span><span style=color:#f1fa8c>&#39;0.0.0.0&#39;</span> 3500:3500
+</span></span></code></pre></div><p>发送请求</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-sh data-lang=sh><span style=display:flex><span>curl --request POST --data <span style=color:#f1fa8c>&#34;@sample.json&#34;</span> --header Content-Type:application/json --header dapr-app-id:nodeapp http://localhost:3500/neworder
+</span></span></code></pre></div><hr><ul class=pager><li class=previous><a href=/2023/03/16/2023-03-16-deploying-pluggable-k8s.md/ data-toggle=tooltip data-placement=top title="Deploying Dapr Pluggable Component In K8s">&larr;
+Previous Post</a></li><li class=next><a href=/2023/06/25/2023-06-25-http-wasm-middleware.md/ data-toggle=tooltip data-placement=top title="Dapr Http Wasm Middleware">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

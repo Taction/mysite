@@ -1,0 +1,1316 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Knative"><meta property="og:title" content="Knative"><meta property="twitter:title" content="Knative"><meta name=description content="云原生，WebAssembly, 开源爱好者，生活探险家 | 这里是 张超 的博客，与你一起发现更大的世界。"><meta property="og:description" content="云原生，WebAssembly, 开源爱好者，生活探险家 | 这里是 张超 的博客，与你一起发现更大的世界。"><meta property="twitter:description" content="云原生，WebAssembly, 开源爱好者，生活探险家 | 这里是 张超 的博客，与你一起发现更大的世界。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Knative | 张超的博客 | Taction Blog</title><link rel=canonical href=/2021/12/01/2021-12-01-knative-scalefrom0.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/knative title=Knative>Knative</a></div><h1>Knative</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Wednesday, December 1, 2021</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>本文主要从源码分析角度来看从0开始扩容和缩容到0的过程。主要核心点在于从0开始扩容，主要涉及activator和autoscaler组件。在了解了从0开始扩容之后，自然就会明白缩容到0的时候发生了什么。</p><h3 id=概览>概览</h3><p>当 Pod 缩容到零的时候流量会指到 Activator 上面，Activator 接收到流量以后会主动“通知”Autoscaler 做一个扩容的操作。扩容完成以后 Activator 需要等待第一个 Pod ready 之后才能把流量转发过来。这里在queue上定义了<code>readinessProbe</code>，通过<code>SERVING_READINESS_PROBE</code>环境变量可以设置queue以指定的方式（exec、tcp、http）探活服务容器是否准备好接收流量。</p><p>activator监听endpoints（还记得private的service是设置了label selector的吗，k8s会自动创建对应的endpoint）等待服务pod启动完成后，将流量转发给对应的pod。</p><p><img src=https://image-1255620078.cos.ap-nanjing.myqcloud.com/image-20211201172212727.png alt=image-20211201172212727></p><h3 id=从0扩容activator源码分析>从0扩容Activator源码分析</h3><p>本部分主要为了梳理当服务为0副本，请求到达activator的代码运行过程，探究其hold住流量，等待pod启动后转发的机制。所以对于其他未涉及在此流程中的代码暂不进行分析。</p><p>这个流程中的一些关键节点大概可以整理成下图：</p><p><img src=https://image-1255620078.cos.ap-nanjing.myqcloud.com/image-20211202132258697.png alt=image-20211202132258697></p><h4 id=指标上报到autoscaler>指标上报到autoscaler</h4><h5 id=目标服务解析>目标服务解析</h5><p>activator从请求 header <code>Knative-Serving-Namespace</code>、<code>Knative-Serving-Revision</code>分别解析出来服务所在的namespace和revision，这两个header值是在定义kingress的时候设置的<code>appendHeaders</code>选项定义的，由网关自动附加。</p><p>如果这两个header值任意一个为空，那么就获取访问host，按照${name}.${namespace}.svc.${clusterdomain}的形式尝试解析host获取上述两个值。</p><p>然后尝试获取revision的详细定义，并将信息附着到context中。</p><p>后续是一系列中间件的处理，其中pkg/activator/handler/tracing_handler.go是trace的处理。</p><h5 id=流量指标统计与上报>流量指标统计与上报</h5><p>在<code>pkg/activator/handler/concurrency_reporter.go</code>文件中定义了Handler路由中间件方法，此方法主要是为了统计流量和并发数量，同时也在对应服务没有副本的时候触发向autoscaler上报的行为。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Handler returns a handler that records requests coming in/being finished in the stats
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// machinery.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (cr <span style=color:#ff79c6>*</span>ConcurrencyReporter) <span style=color:#50fa7b>Handler</span>(next http.Handler) http.HandlerFunc {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>func</span>(w http.ResponseWriter, r <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>      revisionKey <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>RevIDFrom</span>(r.<span style=color:#50fa7b>Context</span>())
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      stat <span style=color:#ff79c6>:=</span> cr.<span style=color:#50fa7b>handleRequestIn</span>(network.ReqEvent{Key: revisionKey, Type: network.ReqIn, Time: time.<span style=color:#50fa7b>Now</span>()})
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// 主要是将并发数量-1
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         cr.<span style=color:#50fa7b>handleRequestOut</span>(stat, network.ReqEvent{Key: revisionKey, Type: network.ReqOut, Time: time.<span style=color:#50fa7b>Now</span>()})
+</span></span><span style=display:flex><span>      }()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      next.<span style=color:#50fa7b>ServeHTTP</span>(w, r)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>handleRequestIn</code>定义在<code>pkg/activator/handler/context_handler.go</code>文件中这个函数中其主要行为就是调用<code>getOrCreateStat</code>函数，如果这个服务没有pod，那么msg就不为nil，而将msg发送到<code>cr.statCh</code>后，最终会通过websocket发送给autoscaler，autoscaler会根据其中的revision信息（namespace + name）来最终触发扩容操作。</p><p>接下来是<code>pkg/activator/handler/concurrency_reporter.go</code>的处理，如果是某个服务第一次被请求，那么会将这个信息发到<code>statCh</code>，它的处理在<code>pkg/activator/stat_reporter.go</code>中就是将指标数据结构转换一下，通过vendor中<code>knative.dev/pkg/websocket/connection.go</code>封装的websocket发送到autoscaler中。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// handleRequestIn handles an event of a request coming into the system. Returns the stats
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// the outgoing event should be recorded to.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (cr <span style=color:#ff79c6>*</span>ConcurrencyReporter) <span style=color:#50fa7b>handleRequestIn</span>(event network.ReqEvent) <span style=color:#ff79c6>*</span>revisionStats {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 只有是第一次请求的时候才会有msg这个信息。后续会发往activator触发扩容。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   stat, msg <span style=color:#ff79c6>:=</span> cr.<span style=color:#50fa7b>getOrCreateStat</span>(event)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> msg <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      cr.statCh <span style=color:#ff79c6>&lt;-</span> []asmetrics.StatMessage{<span style=color:#ff79c6>*</span>msg}
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span> <span style=color:#6272a4>// 记录并发数量+1，记录请求数量+1.请求结束时也会调用下面逻辑，并发数量会在请求结束时被减掉。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   stat.stats.<span style=color:#50fa7b>HandleEvent</span>(event)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> stat
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>如果当前map中无revision对应的state，就返回一个StatMessage来将状态上报给autoscaler从而触发从0扩容，这一部分在后面会详细介绍，接下来让我们先继续往下看。如果有对应的state就将refs++。注意这里的一个常见的并发场景使用锁的方式，在第一次取的时候用的读锁，且手动释放。第二次使用写锁，且第一步同样是检查是否存在。</p><p>state对应的指标也会通过prometheus指标方式暴露出去，供autoscaler获取。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// getOrCreateStat gets a stat from the state if present.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// If absent it creates a new one and returns it, potentially returning a StatMessage too
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// to trigger an immediate scale-from-0.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (cr <span style=color:#ff79c6>*</span>ConcurrencyReporter) <span style=color:#50fa7b>getOrCreateStat</span>(event network.ReqEvent) (<span style=color:#ff79c6>*</span>revisionStats, <span style=color:#ff79c6>*</span>asmetrics.StatMessage) {
+</span></span><span style=display:flex><span>	cr.mux.<span style=color:#50fa7b>RLock</span>()
+</span></span><span style=display:flex><span>	stat <span style=color:#ff79c6>:=</span> cr.stats[event.Key]
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> stat <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// Since this is incremented under the lock, it&#39;s guaranteed to be observed by
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#6272a4>// the deletion routine.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		stat.refs.<span style=color:#50fa7b>Inc</span>()
+</span></span><span style=display:flex><span>		cr.mux.<span style=color:#50fa7b>RUnlock</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> stat, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	cr.mux.<span style=color:#50fa7b>RUnlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Doubly checked locking.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	cr.mux.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> cr.mux.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	stat = cr.stats[event.Key]
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> stat <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// Since this is incremented under the lock, it&#39;s guaranteed to be observed by
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#6272a4>// the deletion routine.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		stat.refs.<span style=color:#50fa7b>Inc</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> stat, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	stat = <span style=color:#ff79c6>&amp;</span>revisionStats{
+</span></span><span style=display:flex><span>		stats:        network.<span style=color:#50fa7b>NewRequestStats</span>(event.Time),
+</span></span><span style=display:flex><span>		firstRequest: <span style=color:#bd93f9>1</span>,
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	stat.refs.<span style=color:#50fa7b>Inc</span>()
+</span></span><span style=display:flex><span>	cr.stats[event.Key] = stat
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> stat, <span style=color:#ff79c6>&amp;</span>asmetrics.StatMessage{
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// 这里是被请求服务的Namespace和版本Name
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		Key: event.Key,
+</span></span><span style=display:flex><span>		Stat: asmetrics.Stat{
+</span></span><span style=display:flex><span>		  <span style=color:#6272a4>// 这个是activator自己的实际pod名称。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			PodName:                   cr.podName,
+</span></span><span style=display:flex><span>			AverageConcurrentRequests: <span style=color:#bd93f9>1</span>,
+</span></span><span style=display:flex><span>			<span style=color:#6272a4>// The way the checks are written, this cannot ever be
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#6272a4>// anything else but 1. The stats map key is only deleted
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#6272a4>// after a reporting period, so we see this code path at most
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#6272a4>// once per period.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			RequestCount: <span style=color:#bd93f9>1</span>,
+</span></span><span style=display:flex><span>		},
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=阻塞等待扩容完成>阻塞等待扩容完成</h4><h5 id=实际流量的处理>实际流量的处理</h5><p>经过各个中间件流程后，最后走到<code>pkg/activator/handler/handler.go</code>中等待pod启动并转发。主要的等待pod启动的逻辑是在<code>a.throttler.Try</code>中进行处理的。等待pod启动后会调用传入的func</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (a <span style=color:#ff79c6>*</span>activationHandler) <span style=color:#50fa7b>ServeHTTP</span>(w http.ResponseWriter, r <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>   config <span style=color:#ff79c6>:=</span> activatorconfig.<span style=color:#50fa7b>FromContext</span>(r.<span style=color:#50fa7b>Context</span>())
+</span></span><span style=display:flex><span>   tracingEnabled <span style=color:#ff79c6>:=</span> config.Tracing.Backend <span style=color:#ff79c6>!=</span> tracingconfig.None
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   tryContext, trySpan <span style=color:#ff79c6>:=</span> r.<span style=color:#50fa7b>Context</span>(), (<span style=color:#ff79c6>*</span>trace.Span)(<span style=color:#ff79c6>nil</span>)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> tracingEnabled {
+</span></span><span style=display:flex><span>      tryContext, trySpan = trace.<span style=color:#50fa7b>StartSpan</span>(r.<span style=color:#50fa7b>Context</span>(), <span style=color:#f1fa8c>&#34;throttler_try&#34;</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   revID <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>RevIDFrom</span>(r.<span style=color:#50fa7b>Context</span>())
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> a.throttler.<span style=color:#50fa7b>Try</span>(tryContext, revID, <span style=color:#8be9fd;font-style:italic>func</span>(dest <span style=color:#8be9fd>string</span>) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// 当pod被启动后，即会执行此函数的内部逻辑，对请求进行转发
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      trySpan.<span style=color:#50fa7b>End</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      proxyCtx, proxySpan <span style=color:#ff79c6>:=</span> r.<span style=color:#50fa7b>Context</span>(), (<span style=color:#ff79c6>*</span>trace.Span)(<span style=color:#ff79c6>nil</span>)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> tracingEnabled {
+</span></span><span style=display:flex><span>         proxyCtx, proxySpan = trace.<span style=color:#50fa7b>StartSpan</span>(r.<span style=color:#50fa7b>Context</span>(), <span style=color:#f1fa8c>&#34;activator_proxy&#34;</span>)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      a.<span style=color:#50fa7b>proxyRequest</span>(revID, w, r.<span style=color:#50fa7b>WithContext</span>(proxyCtx), dest, tracingEnabled, a.usePassthroughLb)
+</span></span><span style=display:flex><span>      proxySpan.<span style=color:#50fa7b>End</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Set error on our capacity waiting span and end it.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      trySpan.<span style=color:#50fa7b>Annotate</span>([]trace.Attribute{trace.<span style=color:#50fa7b>StringAttribute</span>(<span style=color:#f1fa8c>&#34;activator.throttler.error&#34;</span>, err.<span style=color:#50fa7b>Error</span>())}, <span style=color:#f1fa8c>&#34;ThrottlerTry&#34;</span>)
+</span></span><span style=display:flex><span>      trySpan.<span style=color:#50fa7b>End</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      a.logger.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Throttler try error&#34;</span>, zap.<span style=color:#50fa7b>String</span>(logkey.Key, revID.<span style=color:#50fa7b>String</span>()), zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> errors.<span style=color:#50fa7b>Is</span>(err, context.DeadlineExceeded) <span style=color:#ff79c6>||</span> errors.<span style=color:#50fa7b>Is</span>(err, queue.ErrRequestQueueFull) {
+</span></span><span style=display:flex><span>         http.<span style=color:#50fa7b>Error</span>(w, err.<span style=color:#50fa7b>Error</span>(), http.StatusServiceUnavailable)
+</span></span><span style=display:flex><span>      } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>         w.<span style=color:#50fa7b>WriteHeader</span>(http.StatusInternalServerError)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>try函数循环处理一直会等待到pod启动后执行func逻辑。<code>rt.breaker.Maybe</code>是等待pod启动的关键。pod启动后会尝试获取目标地址，并且循环尝试，获取到地址之后，调用传入func，在上面函数中完成对请求的转发。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>revisionThrottler) <span style=color:#50fa7b>try</span>(ctx context.Context, function <span style=color:#8be9fd;font-style:italic>func</span>(<span style=color:#8be9fd>string</span>) <span style=color:#8be9fd>error</span>) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#8be9fd;font-style:italic>var</span> ret <span style=color:#8be9fd>error</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Retrying infinitely as long as we receive no dest. Outer semaphore and inner
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// pod capacity are not changed atomically, hence they can race each other. We
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// &#34;reenqueue&#34; requests should that happen.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   reenqueue <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> reenqueue {
+</span></span><span style=display:flex><span>      reenqueue = <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> rt.breaker.<span style=color:#50fa7b>Maybe</span>(ctx, <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>         cb, tracker <span style=color:#ff79c6>:=</span> rt.<span style=color:#50fa7b>acquireDest</span>(ctx)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> tracker <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>            <span style=color:#6272a4>// This can happen if individual requests raced each other or if pod
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>            <span style=color:#6272a4>// capacity was decreased after passing the outer semaphore.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>            reenqueue = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cb</span>()
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// We already reserved a guaranteed spot. So just execute the passed functor.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         ret = <span style=color:#50fa7b>function</span>(tracker.dest)
+</span></span><span style=display:flex><span>      }); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> ret
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>maybe函数主要是检查是否activator hold住的请求数量达到配置上限，如果达到了就直接丢弃。否则调用<code> b.sem.acquire(ctx)</code>阻塞等待信号量。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Maybe conditionally executes thunk based on the Breaker concurrency
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// and queue parameters. If the concurrency limit and queue capacity are
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// already consumed, Maybe returns immediately without calling thunk. If
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// the thunk was executed, Maybe returns nil, else error.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (b <span style=color:#ff79c6>*</span>Breaker) <span style=color:#50fa7b>Maybe</span>(ctx context.Context, thunk <span style=color:#8be9fd;font-style:italic>func</span>()) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> !b.<span style=color:#50fa7b>tryAcquirePending</span>() {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> ErrRequestQueueFull
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> b.<span style=color:#50fa7b>releasePending</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Wait for capacity in the active queue.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> b.sem.<span style=color:#50fa7b>acquire</span>(ctx); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Defer releasing capacity in the active.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// It&#39;s safe to ignore the error returned by release since we
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// make sure the semaphore is only manipulated here and acquire
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// + release calls are equally paired.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>defer</span> b.sem.<span style=color:#50fa7b>release</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Do the thing.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#50fa7b>thunk</span>()
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Report success
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在acquire中可以看到其在等待<code>s.queue</code>这个通道。那么是谁向这个通道发送的数据呢？在什么情况下发送的数据？实际上这个通道的数据处理是另外一个协程进行的，在服务副本数为0的时候会初始化这个通道，在服务副本数大于0的时候会直接关闭这个通道。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// acquire acquires capacity from the semaphore.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>semaphore) <span style=color:#50fa7b>acquire</span>(ctx context.Context) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>      old <span style=color:#ff79c6>:=</span> s.state.<span style=color:#50fa7b>Load</span>()
+</span></span><span style=display:flex><span>      capacity, in <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>unpack</span>(old)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> in <span style=color:#ff79c6>&gt;=</span> capacity {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>ctx.<span style=color:#50fa7b>Done</span>():
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span> ctx.<span style=color:#50fa7b>Err</span>()
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>s.queue:
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Force reload state.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      in<span style=color:#ff79c6>++</span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> s.state.<span style=color:#50fa7b>CAS</span>(old, <span style=color:#50fa7b>pack</span>(capacity, in)) {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=感知副本数量变化>感知副本数量变化</h4><h5 id=副本数量变化处理>副本数量变化处理</h5><blockquote><p>由于服务副本数量变化是通过k8s client监听的，通过通道传递。这里先解析在副本数量变动后如何处理，如何向上文中的通道发送数据。</p></blockquote><p>在监听到revision对应的endpoint资源信息有变动的时候，会将信息进行一定处理以后发送到updateCh。在启动activator的时候会调用此<code>Throttler</code>的run方法来处理状态变化。这里在监听的变化的时候直接交给了<code>handleUpdate</code>函数来处理。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (t <span style=color:#ff79c6>*</span>Throttler) <span style=color:#50fa7b>run</span>(updateCh <span style=color:#ff79c6>&lt;-</span><span style=color:#8be9fd;font-style:italic>chan</span> revisionDestsUpdate) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>case</span> update, ok <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>updateCh:
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>            t.logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;The Throttler has stopped.&#34;</span>)
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         t.<span style=color:#50fa7b>handleUpdate</span>(update)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>case</span> eps <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>t.epsUpdateCh:
+</span></span><span style=display:flex><span>         t.<span style=color:#50fa7b>handlePubEpsUpdate</span>(eps)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Throttler的handleUpdate主要就是创建或者获取revisioin对应的<code>revisionThrottler</code>然后转到<code>pkg/activator/net/throttler.go</code>中的<code>revisionThrottler</code>来处理副本数和</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>revisionThrottler) <span style=color:#50fa7b>handleUpdate</span>(update revisionDestsUpdate) {
+</span></span><span style=display:flex><span>   rt.logger.<span style=color:#50fa7b>Debugw</span>(<span style=color:#f1fa8c>&#34;Handling update&#34;</span>,
+</span></span><span style=display:flex><span>      zap.<span style=color:#50fa7b>String</span>(<span style=color:#f1fa8c>&#34;ClusterIP&#34;</span>, update.ClusterIPDest), zap.<span style=color:#50fa7b>Object</span>(<span style=color:#f1fa8c>&#34;dests&#34;</span>, logging.<span style=color:#50fa7b>StringSet</span>(update.Dests)))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// ClusterIP is not yet ready, so we want to send requests directly to the pods.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// NB: this will not be called in parallel, thus we can build a new podTrackers
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// array before taking out a lock.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> update.ClusterIPDest <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Create a map for fast lookup of existing trackers.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      trackersMap <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>string</span>]<span style=color:#ff79c6>*</span>podTracker, <span style=color:#8be9fd;font-style:italic>len</span>(rt.podTrackers))
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>for</span> _, tracker <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> rt.podTrackers {
+</span></span><span style=display:flex><span>         trackersMap[tracker.dest] = tracker
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      trackers <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>([]<span style=color:#ff79c6>*</span>podTracker, <span style=color:#bd93f9>0</span>, <span style=color:#8be9fd;font-style:italic>len</span>(update.Dests))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Loop over dests, reuse existing tracker if we have one, otherwise create
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// a new one.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>for</span> newDest <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> update.Dests {
+</span></span><span style=display:flex><span>         tracker, ok <span style=color:#ff79c6>:=</span> trackersMap[newDest]
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>if</span> rt.containerConcurrency <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>               tracker = <span style=color:#50fa7b>newPodTracker</span>(newDest, <span style=color:#ff79c6>nil</span>)
+</span></span><span style=display:flex><span>            } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>               tracker = <span style=color:#50fa7b>newPodTracker</span>(newDest, queue.<span style=color:#50fa7b>NewBreaker</span>(queue.BreakerParams{
+</span></span><span style=display:flex><span>                  QueueDepth:      breakerQueueDepth,
+</span></span><span style=display:flex><span>                  MaxConcurrency:  rt.containerConcurrency,
+</span></span><span style=display:flex><span>                  InitialCapacity: rt.containerConcurrency, <span style=color:#6272a4>// Presume full unused capacity.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>               }))
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         trackers = <span style=color:#8be9fd;font-style:italic>append</span>(trackers, tracker)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      rt.<span style=color:#50fa7b>updateThrottlerState</span>(<span style=color:#8be9fd;font-style:italic>len</span>(update.Dests), trackers, <span style=color:#ff79c6>nil</span> <span style=color:#6272a4>/*clusterIP*/</span>)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   rt.<span style=color:#50fa7b>updateThrottlerState</span>(<span style=color:#8be9fd;font-style:italic>len</span>(update.Dests), <span style=color:#ff79c6>nil</span> <span style=color:#6272a4>/*trackers*/</span>, <span style=color:#50fa7b>newPodTracker</span>(update.ClusterIPDest, <span style=color:#ff79c6>nil</span>))
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>updateThrottlerState函数就是计算实际pod数量，然后调用<code>rt.updateCapacity</code>来更新pod数量。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>revisionThrottler) <span style=color:#50fa7b>updateThrottlerState</span>(backendCount <span style=color:#8be9fd>int</span>, trackers []<span style=color:#ff79c6>*</span>podTracker, clusterIPDest <span style=color:#ff79c6>*</span>podTracker) {
+</span></span><span style=display:flex><span>   rt.logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Updating Revision Throttler with: clusterIP = %v, trackers = %d, backends = %d&#34;</span>,
+</span></span><span style=display:flex><span>      clusterIPDest, <span style=color:#8be9fd;font-style:italic>len</span>(trackers), backendCount)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Update trackers / clusterIP before capacity. Otherwise we can race updating our breaker when
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// we increase capacity, causing a request to fall through before a tracker is added, causing an
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// incorrect LB decision.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>func</span>() <span style=color:#8be9fd>bool</span> {
+</span></span><span style=display:flex><span>      rt.mux.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> rt.mux.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>      rt.podTrackers = trackers
+</span></span><span style=display:flex><span>      rt.clusterIPTracker = clusterIPDest
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> clusterIPDest <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> <span style=color:#ff79c6>||</span> <span style=color:#8be9fd;font-style:italic>len</span>(trackers) &gt; <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>   }() {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// If we have an address to target, then pass through an accurate
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// accounting of the number of backends.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rt.<span style=color:#50fa7b>updateCapacity</span>(backendCount)
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// If we do not have an address to target, then we should treat it
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// as though we have zero backends.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rt.<span style=color:#50fa7b>updateCapacity</span>(<span style=color:#bd93f9>0</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>updateCapacity最终根据pod数量计算出可以放行的最大请求数（即pod数量 * 每个pod允许并发数 / activator数量），然后调用<code>Breaker</code>的<code>UpdateConcurrency</code>函数（还记得这个breaker吗，这就是上文中hold住流量等待信号量的breaker），它调用了自己的信号量的<code>UpdateConcurrency</code>来最终通知到那些在阻塞等待的请求。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// updateCapacity updates the capacity of the throttler and recomputes
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// the assigned trackers to the Activator instance.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// Currently updateCapacity is ensured to be invoked from a single go routine
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// and this does not synchronize
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>revisionThrottler) <span style=color:#50fa7b>updateCapacity</span>(backendCount <span style=color:#8be9fd>int</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// We have to make assignments on each updateCapacity, since if number
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// of activators changes, then we need to rebalance the assignedTrackers.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   ac, ai <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>int</span>(rt.numActivators.<span style=color:#50fa7b>Load</span>()), <span style=color:#8be9fd;font-style:italic>int</span>(rt.activatorIndex.<span style=color:#50fa7b>Load</span>())
+</span></span><span style=display:flex><span>   numTrackers <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>func</span>() <span style=color:#8be9fd>int</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We do not have to process the `podTrackers` under lock, since
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// updateCapacity is guaranteed to be executed by a single goroutine.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// But `assignedTrackers` is being read by the serving thread, so the
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// actual assignment has to be done under lock.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We&#39;re using cluster IP.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> rt.clusterIPTracker <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Sort, so we get more or less stable results.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      sort.<span style=color:#50fa7b>Slice</span>(rt.podTrackers, <span style=color:#8be9fd;font-style:italic>func</span>(i, j <span style=color:#8be9fd>int</span>) <span style=color:#8be9fd>bool</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> rt.podTrackers[i].dest &lt; rt.podTrackers[j].dest
+</span></span><span style=display:flex><span>      })
+</span></span><span style=display:flex><span>      assigned <span style=color:#ff79c6>:=</span> rt.podTrackers
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> rt.containerConcurrency &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>         rt.<span style=color:#50fa7b>resetTrackers</span>()
+</span></span><span style=display:flex><span>         assigned = <span style=color:#50fa7b>assignSlice</span>(rt.podTrackers, ai, ac, rt.containerConcurrency)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      rt.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;Trackers %d/%d: assignment: %v&#34;</span>, ai, ac, assigned)
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// The actual write out of the assigned trackers has to be under lock.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rt.mux.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> rt.mux.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>      rt.assignedTrackers = assigned
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#8be9fd;font-style:italic>len</span>(assigned)
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   capacity <span style=color:#ff79c6>:=</span> <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> numTrackers &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Capacity is computed based off of number of trackers,
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// when using pod direct routing.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      capacity = rt.<span style=color:#50fa7b>calculateCapacity</span>(<span style=color:#8be9fd;font-style:italic>len</span>(rt.podTrackers), ac)
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Capacity is computed off of number of ready backends,
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// when we are using clusterIP routing.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      capacity = rt.<span style=color:#50fa7b>calculateCapacity</span>(backendCount, ac)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   rt.logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Set capacity to %d (backends: %d, index: %d/%d)&#34;</span>,
+</span></span><span style=display:flex><span>      capacity, backendCount, ai, ac)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   rt.backendCount = backendCount
+</span></span><span style=display:flex><span>   rt.breaker.<span style=color:#50fa7b>UpdateConcurrency</span>(capacity)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// UpdateConcurrency updates the maximum number of in-flight requests.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (b <span style=color:#ff79c6>*</span>Breaker) <span style=color:#50fa7b>UpdateConcurrency</span>(size <span style=color:#8be9fd>int</span>) {
+</span></span><span style=display:flex><span>	b.sem.<span style=color:#50fa7b>updateCapacity</span>(size)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>可以看到这里就是向<code>s.queue</code>发送了指定数量的数据，以放行这些流量。（// todo 这个时候pod扩缩容了会是什么情况）</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// updateCapacity updates the capacity of the semaphore to the desired size.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>semaphore) <span style=color:#50fa7b>updateCapacity</span>(size <span style=color:#8be9fd>int</span>) {
+</span></span><span style=display:flex><span>	s64 <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>uint64</span>(size)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>		old <span style=color:#ff79c6>:=</span> s.state.<span style=color:#50fa7b>Load</span>()
+</span></span><span style=display:flex><span>		capacity, in <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>unpack</span>(old)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> capacity <span style=color:#ff79c6>==</span> s64 {
+</span></span><span style=display:flex><span>			<span style=color:#6272a4>// Nothing to do, exit early.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>			<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> s.state.<span style=color:#50fa7b>CAS</span>(old, <span style=color:#50fa7b>pack</span>(s64, in)) {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> s64 &gt; capacity {
+</span></span><span style=display:flex><span>				<span style=color:#ff79c6>for</span> i <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>uint64</span>(<span style=color:#bd93f9>0</span>); i &lt; s64<span style=color:#ff79c6>-</span>capacity; i<span style=color:#ff79c6>++</span> {
+</span></span><span style=display:flex><span>					<span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>					<span style=color:#ff79c6>case</span> s.queue <span style=color:#ff79c6>&lt;-</span> <span style=color:#8be9fd;font-style:italic>struct</span>{}{}:
+</span></span><span style=display:flex><span>					<span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>						<span style=color:#6272a4>// See comment in `release` for explanation of this case.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>					}
+</span></span><span style=display:flex><span>				}
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=监听副本数量变化>监听副本数量变化</h5><p>˙重点监听revision状态变化逻辑在<code>pkg/activator/net/revision_backends.go</code>定义。在去掉一些其他逻辑后，从下面可以看出在<code>newRevisionBackendsManagerWithProbeFrequency</code>函数中定义了对private service对应的endpoint的监听。<code>Throttler</code>的Run函数将监听到的变化和上文中副本数量变化的处理部分衔接起来。update channle中发送的是revision信息（name和namespace）。</p><p>前面说过对于revision和其endpoint的监听是在<code>pkg/activator/net/revision_backends.go</code>文件中定义的。会监听revision和endpoint资源。在revision有变动的时候，todo。主要是要监听endpoint资源的变动，在增加和删除的时候会调用update函数，传入当前的endpoint信息：</p><p>监听变动，筛选条件为带有revisionUID标签，并且必须是private的</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Run starts the throttler and blocks until the context is done.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (t <span style=color:#ff79c6>*</span>Throttler) <span style=color:#50fa7b>Run</span>(ctx context.Context, probeTransport http.RoundTripper, usePassthroughLb <span style=color:#8be9fd>bool</span>, meshMode network.MeshCompatibilityMode) {
+</span></span><span style=display:flex><span>	rbm <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>newRevisionBackendsManager</span>(ctx, probeTransport, usePassthroughLb, meshMode)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Update channel is closed when ctx is done.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	t.<span style=color:#50fa7b>run</span>(rbm.<span style=color:#50fa7b>updates</span>())
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>newRevisionBackendsManager</span>(ctx context.Context, tr http.RoundTripper, usePassthroughLb <span style=color:#8be9fd>bool</span>, meshMode network.MeshCompatibilityMode) <span style=color:#ff79c6>*</span>revisionBackendsManager {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#50fa7b>newRevisionBackendsManagerWithProbeFrequency</span>(ctx, tr, usePassthroughLb, meshMode, defaultProbeFrequency)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>newRevisionBackendsManagerWithProbeFrequency</span>(ctx context.Context, tr http.RoundTripper,
+</span></span><span style=display:flex><span>   usePassthroughLb <span style=color:#8be9fd>bool</span>, meshMode network.MeshCompatibilityMode, probeFreq time.Duration) <span style=color:#ff79c6>*</span>revisionBackendsManager {
+</span></span><span style=display:flex><span>   rbm <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>revisionBackendsManager{
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   }
+</span></span><span style=display:flex><span>   endpointsInformer <span style=color:#ff79c6>:=</span> endpointsinformer.<span style=color:#50fa7b>Get</span>(ctx)
+</span></span><span style=display:flex><span>   endpointsInformer.<span style=color:#50fa7b>Informer</span>().<span style=color:#50fa7b>AddEventHandler</span>(cache.FilteringResourceEventHandler{
+</span></span><span style=display:flex><span>      FilterFunc: reconciler.<span style=color:#50fa7b>ChainFilterFuncs</span>(
+</span></span><span style=display:flex><span>         reconciler.<span style=color:#50fa7b>LabelExistsFilterFunc</span>(serving.RevisionUID),
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// We are only interested in the private services, since that is
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// what is populated by the actual revision backends.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         reconciler.<span style=color:#50fa7b>LabelFilterFunc</span>(networking.ServiceTypeKey, <span style=color:#8be9fd;font-style:italic>string</span>(networking.ServiceTypePrivate), <span style=color:#ff79c6>false</span>),
+</span></span><span style=display:flex><span>      ),
+</span></span><span style=display:flex><span>      Handler: cache.ResourceEventHandlerFuncs{
+</span></span><span style=display:flex><span>         AddFunc:    rbm.endpointsUpdated,
+</span></span><span style=display:flex><span>         UpdateFunc: controller.<span style=color:#50fa7b>PassNew</span>(rbm.endpointsUpdated),
+</span></span><span style=display:flex><span>         DeleteFunc: rbm.endpointsDeleted,
+</span></span><span style=display:flex><span>      },
+</span></span><span style=display:flex><span>   })
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>return</span> rbm
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在监听到endpoint被添加和修改后的实际处理函数逻辑为：获取<code>RevisionWatcher</code>将ready的和notReady的pod信息发送到其<code>destsCh</code>中：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// endpointsUpdated is a handler function to be used by the Endpoints informer.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// It updates the endpoints in the RevisionBackendsManager if the hosts changed
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (rbm <span style=color:#ff79c6>*</span>revisionBackendsManager) <span style=color:#50fa7b>endpointsUpdated</span>(newObj <span style=color:#8be9fd;font-style:italic>interface</span>{}) {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Ignore the updates when we&#39;ve terminated.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>rbm.ctx.<span style=color:#50fa7b>Done</span>():
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   endpoints <span style=color:#ff79c6>:=</span> newObj.(<span style=color:#ff79c6>*</span>corev1.Endpoints)
+</span></span><span style=display:flex><span>   revID <span style=color:#ff79c6>:=</span> types.NamespacedName{Namespace: endpoints.Namespace, Name: endpoints.Labels[serving.RevisionLabelKey]}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   rw, err <span style=color:#ff79c6>:=</span> rbm.<span style=color:#50fa7b>getOrCreateRevisionWatcher</span>(revID)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      rbm.logger.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Failed to get revision watcher&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err), zap.<span style=color:#50fa7b>String</span>(logkey.Key, revID.<span style=color:#50fa7b>String</span>()))
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   ready, notReady <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>endpointsToDests</span>(endpoints, pkgnet.<span style=color:#50fa7b>ServicePortName</span>(rw.protocol))
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>rbm.ctx.<span style=color:#50fa7b>Done</span>():
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> rw.destsCh <span style=color:#ff79c6>&lt;-</span> dests{ready: ready, notReady: notReady}:
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>revision watcher在被创建的时候会起协程运行run函数，每当通道内有消息的时候会将信息进行处理并交由<code>checkDests</code>进一步处理，最终在这个函数中交由<code>sendUpdate</code>将更新信息发到update channel中，这个channel就是一开始提到的。</p><p>删除部分辅助逻辑后，可以清晰看到此函数功能就是当<code>destsCh</code>新的dest到来的时候，就将之前的和现在的一起交由<code>sendUpdate</code>处理。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rw <span style=color:#ff79c6>*</span>revisionWatcher) <span style=color:#50fa7b>run</span>(probeFrequency time.Duration) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>close</span>(rw.done)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> curDests, prevDests dests
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>rw.stopCh:
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>case</span> x <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>rw.destsCh:
+</span></span><span style=display:flex><span>			rw.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;Updating Endpoints: ready backends: %d, not-ready backends: %d&#34;</span>, <span style=color:#8be9fd;font-style:italic>len</span>(x.ready), <span style=color:#8be9fd;font-style:italic>len</span>(x.notReady))
+</span></span><span style=display:flex><span>			prevDests, curDests = curDests, x
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		rw.<span style=color:#50fa7b>checkDests</span>(curDests, prevDests)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>checkDests函数首先查看是否是缩容到0，如果是就直接发送pod已经缩容到0的通知逻辑。这一块逻辑稍微有点复杂，但是目标很简单，就是将现在这个服务的clusterIP和pod访问地址交由<code>sendUpdate</code>进一步处理。而<code>sendUpdate</code>就是将数据封装一下加上revision信息发送到update 通道。从而触发了上面副本变化的处理逻辑。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// checkDests performs probing and potentially sends a dests update. It is
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// assumed this method is not called concurrently.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (rw <span style=color:#ff79c6>*</span>revisionWatcher) <span style=color:#50fa7b>checkDests</span>(curDests, prevDests dests) {
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 缩容到0后的处理
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(curDests.ready) <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> <span style=color:#ff79c6>&amp;&amp;</span> <span style=color:#8be9fd;font-style:italic>len</span>(curDests.notReady) <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We must have scaled down.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rw.clusterIPHealthy = <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>      rw.healthyPods = <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>      rw.logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;ClusterIP is no longer healthy.&#34;</span>)
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Send update that we are now inactive (both params invalid).
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rw.<span style=color:#50fa7b>sendUpdate</span>(<span style=color:#f1fa8c>&#34;&#34;</span>, <span style=color:#ff79c6>nil</span>)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If we have discovered (or have been told via meshMode) that this revision
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// cannot be probed directly do not spend time trying.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> rw.podsAddressable <span style=color:#ff79c6>&amp;&amp;</span> rw.meshMode <span style=color:#ff79c6>!=</span> network.MeshCompatibilityModeEnabled {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// reprobe set contains the targets that moved from ready to non-ready set.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// so they have to be re-probed.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      reprobe <span style=color:#ff79c6>:=</span> curDests.<span style=color:#50fa7b>becameNonReady</span>(prevDests)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(reprobe) &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>         rw.logger.<span style=color:#50fa7b>Infow</span>(<span style=color:#f1fa8c>&#34;Need to reprobe pods who became non-ready&#34;</span>,
+</span></span><span style=display:flex><span>            zap.<span style=color:#50fa7b>Object</span>(<span style=color:#f1fa8c>&#34;IPs&#34;</span>, logging.<span style=color:#50fa7b>StringSet</span>(reprobe)))
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Trim the pods that migrated to the non-ready set from the
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// ready set from the healthy pods. They will automatically
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// probed below.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>for</span> p <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> reprobe {
+</span></span><span style=display:flex><span>            rw.healthyPods.<span style=color:#50fa7b>Delete</span>(p)
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// First check the pod IPs. If we can individually address
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// the Pods we should go that route, since it permits us to do
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// precise load balancing in the throttler.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      hs, noop, notMesh, err <span style=color:#ff79c6>:=</span> rw.<span style=color:#50fa7b>probePodIPs</span>(curDests.ready, curDests.notReady)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         rw.logger.<span style=color:#50fa7b>Warnw</span>(<span style=color:#f1fa8c>&#34;Failed probing pods&#34;</span>, zap.<span style=color:#50fa7b>Object</span>(<span style=color:#f1fa8c>&#34;curDests&#34;</span>, curDests), zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// We dont want to return here as an error still affects health states.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We need to send update if reprobe is non-empty, since the state
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// of the world has been changed.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rw.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;Done probing, got %d healthy pods&#34;</span>, <span style=color:#8be9fd;font-style:italic>len</span>(hs))
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> !noop <span style=color:#ff79c6>||</span> <span style=color:#8be9fd;font-style:italic>len</span>(reprobe) &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>         rw.healthyPods = hs
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Note: it&#39;s important that this copies (via hs.Union) the healthy pods
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// set before sending the update to avoid concurrent modifications
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// affecting the throttler, which iterates over the set.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         rw.<span style=color:#50fa7b>sendUpdate</span>(<span style=color:#f1fa8c>&#34;&#34;</span> <span style=color:#6272a4>/*clusterIP*/</span>, hs.<span style=color:#50fa7b>Union</span>(<span style=color:#ff79c6>nil</span>))
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// no-op, and we have successfully probed at least one pod.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(hs) &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We didn&#39;t get any pods, but we know the mesh is not enabled since we got
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// a non-mesh status code while probing, so we don&#39;t want to fall back.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> notMesh {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> rw.usePassthroughLb {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// If passthrough lb is enabled we do not want to fall back to going via the
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// clusterIP and instead want to exit early.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> rw.meshMode <span style=color:#ff79c6>==</span> network.MeshCompatibilityModeDisabled {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// If mesh is disabled we always want to use direct pod addressing, and
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// will not fall back to clusterIP.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If we failed to probe even a single pod, check the clusterIP.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// NB: We can&#39;t cache the IP address, since user might go rogue
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// and delete the K8s service. We&#39;ll fix it, but the cluster IP will be different.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   dest, err <span style=color:#ff79c6>:=</span> rw.<span style=color:#50fa7b>getDest</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      rw.logger.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Failed to determine service destination&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If cluster IP is healthy and we haven&#39;t scaled down, short circuit.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> rw.clusterIPHealthy {
+</span></span><span style=display:flex><span>      rw.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;ClusterIP %s already probed (ready backends: %d)&#34;</span>, dest, <span style=color:#8be9fd;font-style:italic>len</span>(curDests.ready))
+</span></span><span style=display:flex><span>      rw.<span style=color:#50fa7b>sendUpdate</span>(dest, curDests.ready)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If clusterIP is healthy send this update and we are done.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> ok, err <span style=color:#ff79c6>:=</span> rw.<span style=color:#50fa7b>probeClusterIP</span>(dest); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      rw.logger.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Failed to probe clusterIP &#34;</span><span style=color:#ff79c6>+</span>dest, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> ok {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We can reach here only iff pods are not successfully individually probed
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// but ClusterIP conversely has been successfully probed.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      rw.podsAddressable = <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>      rw.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;ClusterIP is successfully probed: %s (ready backends: %d)&#34;</span>, dest, <span style=color:#8be9fd;font-style:italic>len</span>(curDests.ready))
+</span></span><span style=display:flex><span>      rw.clusterIPHealthy = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>      rw.healthyPods = <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>      rw.<span style=color:#50fa7b>sendUpdate</span>(dest, curDests.ready)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rw <span style=color:#ff79c6>*</span>revisionWatcher) <span style=color:#50fa7b>sendUpdate</span>(clusterIP <span style=color:#8be9fd>string</span>, dests sets.String) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>rw.stopCh:
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>		rw.updateCh <span style=color:#ff79c6>&lt;-</span> revisionDestsUpdate{Rev: rw.rev, ClusterIPDest: clusterIP, Dests: dests}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>endpoint的修改是由k8s自动触发的。</p><h3 id=从0扩容autoscaler源码分析>从0扩容autoscaler源码分析</h3><h4 id=接收activator从0扩容指标>接收activator从0扩容指标</h4><p>首先让我们把目光聚焦到接收activator 发送的metrics并进行处理的逻辑。<code>statserver</code>启动一个websocket服务器，接收activator在服务没有副本的时候发送的流量参数，标志着这个服务需要立即从0扩容。这里通过<code>statsCh</code>将指标的接收与处理解耦开来。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ......
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// autoscaler在接收到从websocket上报的指标后，会把消息内容发送到这个通道中进行异步处理。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// statsCh is the main communication channel between the stats server and multiscaler.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   statsCh <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>chan</span> asmetrics.StatMessage, statsBufferLen)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>close</span>(statsCh)
+</span></span><span style=display:flex><span>  
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ......
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  
+</span></span><span style=display:flex><span>  	<span style=color:#6272a4>// accept is the func to call when this pod owns the Revision for this StatMessage.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 实际有了请求之后，冷启动时发送过来的信息
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	accept <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>func</span>(sm asmetrics.StatMessage) {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 这个就是将指标发给统计的，在计算扩缩容状态的时候就会用到这些指标
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		collector.<span style=color:#50fa7b>Record</span>(sm.Key, time.<span style=color:#50fa7b>Unix</span>(sm.Stat.Timestamp, <span style=color:#bd93f9>0</span>), sm.Stat)
+</span></span><span style=display:flex><span>		multiScaler.<span style=color:#50fa7b>Poke</span>(sm.Key, sm.Stat)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> f <span style=color:#ff79c6>*</span>statforwarder.Forwarder
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> b, bs, err <span style=color:#ff79c6>:=</span> leaderelection.<span style=color:#50fa7b>NewStatefulSetBucketAndSet</span>(<span style=color:#8be9fd;font-style:italic>int</span>(cc.Buckets)); err <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Running with StatefulSet leader election&#34;</span>)
+</span></span><span style=display:flex><span>		ctx = leaderelection.<span style=color:#50fa7b>WithStatefulSetElectorBuilder</span>(ctx, cc, b)
+</span></span><span style=display:flex><span>		f = statforwarder.<span style=color:#50fa7b>New</span>(ctx, bs)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> statforwarder.<span style=color:#50fa7b>StatefulSetBasedProcessor</span>(ctx, f, accept); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			logger.<span style=color:#50fa7b>Fatalw</span>(<span style=color:#f1fa8c>&#34;Failed to set up statefulset processors&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Running with Standard leader election&#34;</span>)
+</span></span><span style=display:flex><span>		ctx = leaderelection.<span style=color:#50fa7b>WithStandardLeaderElectorBuilder</span>(ctx, kubeClient, cc)
+</span></span><span style=display:flex><span>		f = statforwarder.<span style=color:#50fa7b>New</span>(ctx, bucket.<span style=color:#50fa7b>AutoscalerBucketSet</span>(cc.Buckets))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> statforwarder.<span style=color:#50fa7b>LeaseBasedProcessor</span>(ctx, f, accept); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			logger.<span style=color:#50fa7b>Fatalw</span>(<span style=color:#f1fa8c>&#34;Failed to set up lease tracking&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Set up a statserver.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   statsServer <span style=color:#ff79c6>:=</span> statserver.<span style=color:#50fa7b>New</span>(statsServerAddr, statsCh, logger, f.IsBucketOwner)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> f.<span style=color:#50fa7b>Cancel</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>go</span> controller.<span style=color:#50fa7b>StartAll</span>(ctx, controllers<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>for</span> sm <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> statsCh {
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Set the timestamp when first receiving the stat.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>if</span> sm.Stat.Timestamp <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>            sm.Stat.Timestamp = time.<span style=color:#50fa7b>Now</span>().<span style=color:#50fa7b>Unix</span>()
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         f.<span style=color:#50fa7b>Process</span>(sm)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   profilingServer <span style=color:#ff79c6>:=</span> profiling.<span style=color:#50fa7b>NewServer</span>(profilingHandler)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   eg, egCtx <span style=color:#ff79c6>:=</span> errgroup.<span style=color:#50fa7b>WithContext</span>(ctx)
+</span></span><span style=display:flex><span>   eg.<span style=color:#50fa7b>Go</span>(statsServer.ListenAndServe)
+</span></span><span style=display:flex><span>   eg.<span style=color:#50fa7b>Go</span>(profilingServer.ListenAndServe)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>上面可以看到指标都是由Process函数进行处理的。这个函数是将消息发往一个内部通道，获取processor并在其<code>process</code>函数中进行处理并执行重试逻辑，最大重试次数是硬编码的30次，每次重试间隔500ms。注意一点是autoscaler处于主节点和从节点模式下processor的处理逻辑是不同的。如果是从节点的话，就把这个消息再发到主节点的websocket端口上去，然后主节点的逻辑又会走到这里，所以后面主要以当前autoscaler是主节点情况下分析。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Process enqueues the given Stat for processing asynchronously.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// It calls Forwarder.accept if the pod where this Forwarder is running is the owner
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// of the given StatMessage. Otherwise it forwards the given StatMessage to the right
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// owner pod. It will retry if any error happens during the processing.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (f <span style=color:#ff79c6>*</span>Forwarder) <span style=color:#50fa7b>Process</span>(sm asmetrics.StatMessage) {
+</span></span><span style=display:flex><span>   f.statCh <span style=color:#ff79c6>&lt;-</span> stat{sm: sm, retry: <span style=color:#bd93f9>0</span>}
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (f <span style=color:#ff79c6>*</span>Forwarder) <span style=color:#50fa7b>process</span>() {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      f.retryWg.<span style=color:#50fa7b>Wait</span>()
+</span></span><span style=display:flex><span>      f.processingWg.<span style=color:#50fa7b>Done</span>()
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>f.stopCh:
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>case</span> s <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>f.statCh:
+</span></span><span style=display:flex><span>         rev <span style=color:#ff79c6>:=</span> s.sm.Key.<span style=color:#50fa7b>String</span>()
+</span></span><span style=display:flex><span>         l <span style=color:#ff79c6>:=</span> f.logger.<span style=color:#50fa7b>With</span>(zap.<span style=color:#50fa7b>String</span>(logkey.Key, rev))
+</span></span><span style=display:flex><span>         bkt <span style=color:#ff79c6>:=</span> f.bs.<span style=color:#50fa7b>Owner</span>(rev)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// 获取processor,由于高可用情况下存在多个autoscaler副本，但是只有一个能处理。所以processor也有两种类型
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         p <span style=color:#ff79c6>:=</span> f.<span style=color:#50fa7b>getProcessor</span>(bkt)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> p <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>            l.<span style=color:#50fa7b>Warn</span>(<span style=color:#f1fa8c>&#34;Can&#39;t find the owner for Revision bucket: &#34;</span>, bkt)
+</span></span><span style=display:flex><span>            f.<span style=color:#50fa7b>maybeRetry</span>(l, s)
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>continue</span>
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> p.<span style=color:#50fa7b>process</span>(s.sm); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>            l.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Error while processing stat&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>            f.<span style=color:#50fa7b>maybeRetry</span>(l, s)
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这里看下process的处理，就是调用了之前main函数中定义的accept，做了两件事情一个是记录指标，指标记录是一个单独的逻辑会在后面介绍。一个是调用<code>multiScaler.Poke</code>这个方法，接下来看下这个方法做了什么。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>localProcessor) <span style=color:#50fa7b>process</span>(sm asmetrics.StatMessage) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	l <span style=color:#ff79c6>:=</span> p.logger.<span style=color:#50fa7b>With</span>(zap.<span style=color:#50fa7b>String</span>(logkey.Key, sm.Key.<span style=color:#50fa7b>String</span>()))
+</span></span><span style=display:flex><span>	l.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;Accept stat as owner of bucket &#34;</span>, p.bkt)
+</span></span><span style=display:flex><span>	p.<span style=color:#50fa7b>accept</span>(sm)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// accept 对应在main函数中定义的函数，传递进来的
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>accept <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>func</span>(sm asmetrics.StatMessage) {
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 这个就是将指标发给统计的，在计算扩缩容状态的时候就会用到这些指标
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		collector.<span style=color:#50fa7b>Record</span>(sm.Key, time.<span style=color:#50fa7b>Unix</span>(sm.Stat.Timestamp, <span style=color:#bd93f9>0</span>), sm.Stat)
+</span></span><span style=display:flex><span>		multiScaler.<span style=color:#50fa7b>Poke</span>(sm.Key, sm.Stat)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这个函数的作用就是检查是否立即触发扩容。如果目前副本数是0，但是并发数不为0，就要立即从0扩容，就将信号发送到revision对应的scaler的<code>pokeCh</code>通道中。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// 这个函数的作用就是检查是否立即触发扩容
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// Poke checks if the autoscaler needs to be run immediately.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>MultiScaler) <span style=color:#50fa7b>Poke</span>(key types.NamespacedName, stat metrics.Stat) {
+</span></span><span style=display:flex><span>   m.scalersMutex.<span style=color:#50fa7b>RLock</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> m.scalersMutex.<span style=color:#50fa7b>RUnlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   scaler, exists <span style=color:#ff79c6>:=</span> m.scalers[key]
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> !exists {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> scaler.<span style=color:#50fa7b>latestScale</span>() <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> <span style=color:#ff79c6>&amp;&amp;</span> stat.AverageConcurrentRequests <span style=color:#ff79c6>!=</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>      scaler.pokeCh <span style=color:#ff79c6>&lt;-</span> <span style=color:#8be9fd;font-style:italic>struct</span>{}{}
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=触发扩缩容>触发扩缩容</h4><p>对<code>pokeCh</code>处理的核心逻辑定义在<code>pkg/autoscaler/scaling/multiscaler.go</code>文件中，可以看到计算扩缩容的操作会被周期触发，或者在<code>pokeCh</code>有数据时立即触发。扩缩容处理函数<code>tickScaler</code>就是获取</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>MultiScaler) <span style=color:#50fa7b>runScalerTicker</span>(runner <span style=color:#ff79c6>*</span>scalerRunner, metricKey types.NamespacedName) {
+</span></span><span style=display:flex><span>   ticker <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>tickProvider</span>(tickInterval)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>defer</span> ticker.<span style=color:#50fa7b>Stop</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>for</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>m.scalersStopCh:
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>runner.stopCh:
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>ticker.C:
+</span></span><span style=display:flex><span>            m.<span style=color:#50fa7b>tickScaler</span>(runner.scaler, runner, metricKey)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>runner.pokeCh:
+</span></span><span style=display:flex><span>            m.<span style=color:#50fa7b>tickScaler</span>(runner.scaler, runner, metricKey)
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>MultiScaler) <span style=color:#50fa7b>tickScaler</span>(scaler UniScaler, runner <span style=color:#ff79c6>*</span>scalerRunner, metricKey types.NamespacedName) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// scaler.Scale是一个比较复杂的函数，其主要作用就是计算期望副本数。其返回值结构体如下：
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>//type ScaleResult struct {
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>//  期望副本数.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>//	DesiredPodCount int32
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>//  是考虑到目标突发容量的修正后的满负荷容量.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>//	ExcessBurstCapacity int32
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>//  这个结果是否有用
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>//	ScaleValid bool
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>//}
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	sr <span style=color:#ff79c6>:=</span> scaler.<span style=color:#50fa7b>Scale</span>(runner.logger, time.<span style=color:#50fa7b>Now</span>())
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !sr.ScaleValid {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// scalerRunner也是一个非常核心的struct，这里主要就是将计算结构更新到自己的结构体内部字段。特别是期望副本数，在其他地方想要取期望副本数的时候，就通过此结构体取。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> runner.<span style=color:#50fa7b>updateLatestScale</span>(sr) {
+</span></span><span style=display:flex><span>		m.<span style=color:#50fa7b>Inform</span>(metricKey)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Scale的定义在<code>pkg/autoscaler/scaling/autoscaler.go</code>文件中。如果你觉得太长你就大概理解为这个函数根据activator和queue上报上来的指标计算期望副本数就行了。具体在下面函数中关键点都有注释</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Scale calculates the desired scale based on current statistics given the current time.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// desiredPodCount is the calculated pod count the autoscaler would like to set.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// validScale signifies whether the desiredPodCount should be applied or not.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// Scale is not thread safe in regards to panic state, but it&#39;s thread safe in
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// regards to acquiring the decider spec.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (a <span style=color:#ff79c6>*</span>autoscaler) <span style=color:#50fa7b>Scale</span>(logger <span style=color:#ff79c6>*</span>zap.SugaredLogger, now time.Time) ScaleResult {
+</span></span><span style=display:flex><span>   desugared <span style=color:#ff79c6>:=</span> logger.<span style=color:#50fa7b>Desugar</span>()
+</span></span><span style=display:flex><span>   debugEnabled <span style=color:#ff79c6>:=</span> desugared.<span style=color:#50fa7b>Core</span>().<span style=color:#50fa7b>Enabled</span>(zapcore.DebugLevel)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 获取缩放配置
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   spec <span style=color:#ff79c6>:=</span> a.<span style=color:#50fa7b>currentSpec</span>()
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 获取ready的pod的数量
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   originalReadyPodsCount, err <span style=color:#ff79c6>:=</span> a.podCounter.<span style=color:#50fa7b>ReadyCount</span>()
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If the error is NotFound, then presume 0.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> <span style=color:#ff79c6>&amp;&amp;</span> !apierrors.<span style=color:#50fa7b>IsNotFound</span>(err) {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Failed to get ready pod count via K8S Lister&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> invalidSR
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Use 1 if there are zero current pods.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   readyPodsCount <span style=color:#ff79c6>:=</span> math.<span style=color:#50fa7b>Max</span>(<span style=color:#bd93f9>1</span>, <span style=color:#8be9fd;font-style:italic>float64</span>(originalReadyPodsCount))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   metricKey <span style=color:#ff79c6>:=</span> types.NamespacedName{Namespace: a.namespace, Name: a.revision}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   metricName <span style=color:#ff79c6>:=</span> spec.ScalingMetric
+</span></span><span style=display:flex><span>   <span style=color:#8be9fd;font-style:italic>var</span> observedStableValue, observedPanicValue <span style=color:#8be9fd>float64</span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 对应两种扩容模式：并发数RPS、每秒请求数concurrency
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>switch</span> spec.ScalingMetric {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> autoscaling.RPS:
+</span></span><span style=display:flex><span>      observedStableValue, observedPanicValue, err = a.metricClient.<span style=color:#50fa7b>StableAndPanicRPS</span>(metricKey, now)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>      metricName = autoscaling.Concurrency <span style=color:#6272a4>// concurrency is used by default
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      observedStableValue, observedPanicValue, err = a.metricClient.<span style=color:#50fa7b>StableAndPanicConcurrency</span>(metricKey, now)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> errors.<span style=color:#50fa7b>Is</span>(err, metrics.ErrNoData) {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;No data to scale on yet&#34;</span>)
+</span></span><span style=display:flex><span>      } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Errorw</span>(<span style=color:#f1fa8c>&#34;Failed to obtain metrics&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> invalidSR
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 根据获取的指标数据计算需要的pod数量
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// Make sure we don&#39;t get stuck with the same number of pods, if the scale up rate
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// is too conservative and MaxScaleUp*RPC==RPC, so this permits us to grow at least by a single
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// pod if we need to scale up.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// E.g. MSUR=1.1, OCC=3, RPC=2, TV=1 =&gt; OCC/TV=3, MSU=2.2 =&gt; DSPC=2, while we definitely, need
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// 3 pods. See the unit test for this scenario in action.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   maxScaleUp <span style=color:#ff79c6>:=</span> math.<span style=color:#50fa7b>Ceil</span>(spec.MaxScaleUpRate <span style=color:#ff79c6>*</span> readyPodsCount)
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Same logic, opposite math applies here.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   maxScaleDown <span style=color:#ff79c6>:=</span> <span style=color:#bd93f9>0.</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> spec.Reachable {
+</span></span><span style=display:flex><span>      maxScaleDown = math.<span style=color:#50fa7b>Floor</span>(readyPodsCount <span style=color:#ff79c6>/</span> spec.MaxScaleDownRate)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   dspc <span style=color:#ff79c6>:=</span> math.<span style=color:#50fa7b>Ceil</span>(observedStableValue <span style=color:#ff79c6>/</span> spec.TargetValue)
+</span></span><span style=display:flex><span>   dppc <span style=color:#ff79c6>:=</span> math.<span style=color:#50fa7b>Ceil</span>(observedPanicValue <span style=color:#ff79c6>/</span> spec.TargetValue)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> debugEnabled {
+</span></span><span style=display:flex><span>      desugared.<span style=color:#50fa7b>Debug</span>(
+</span></span><span style=display:flex><span>         fmt.<span style=color:#50fa7b>Sprintf</span>(<span style=color:#f1fa8c>&#34;For metric %s observed values: stable = %0.3f; panic = %0.3f; target = %0.3f &#34;</span><span style=color:#ff79c6>+</span>
+</span></span><span style=display:flex><span>            <span style=color:#f1fa8c>&#34;Desired StablePodCount = %0.0f, PanicPodCount = %0.0f, ReadyEndpointCount = %d, MaxScaleUp = %0.0f, MaxScaleDown = %0.0f&#34;</span>,
+</span></span><span style=display:flex><span>            metricName, observedStableValue, observedPanicValue, spec.TargetValue,
+</span></span><span style=display:flex><span>            dspc, dppc, originalReadyPodsCount, maxScaleUp, maxScaleDown))
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// We want to keep desired pod count in the  [maxScaleDown, maxScaleUp] range.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   desiredStablePodCount <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>int32</span>(math.<span style=color:#50fa7b>Min</span>(math.<span style=color:#50fa7b>Max</span>(dspc, maxScaleDown), maxScaleUp))
+</span></span><span style=display:flex><span>   desiredPanicPodCount <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>int32</span>(math.<span style=color:#50fa7b>Min</span>(math.<span style=color:#50fa7b>Max</span>(dppc, maxScaleDown), maxScaleUp))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   isOverPanicThreshold <span style=color:#ff79c6>:=</span> dppc<span style=color:#ff79c6>/</span>readyPodsCount <span style=color:#ff79c6>&gt;=</span> spec.PanicThreshold
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> a.panicTime.<span style=color:#50fa7b>IsZero</span>() <span style=color:#ff79c6>&amp;&amp;</span> isOverPanicThreshold {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Begin panicking when we cross the threshold in the panic window.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;PANICKING.&#34;</span>)
+</span></span><span style=display:flex><span>      a.panicTime = now
+</span></span><span style=display:flex><span>      pkgmetrics.<span style=color:#50fa7b>Record</span>(a.reporterCtx, panicM.<span style=color:#50fa7b>M</span>(<span style=color:#bd93f9>1</span>))
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> isOverPanicThreshold {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// If we&#39;re still over panic threshold right now — extend the panic window.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      a.panicTime = now
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> !a.panicTime.<span style=color:#50fa7b>IsZero</span>() <span style=color:#ff79c6>&amp;&amp;</span> !isOverPanicThreshold <span style=color:#ff79c6>&amp;&amp;</span> a.panicTime.<span style=color:#50fa7b>Add</span>(spec.StableWindow).<span style=color:#50fa7b>Before</span>(now) {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Stop panicking after the surge has made its way into the stable metric.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Un-panicking.&#34;</span>)
+</span></span><span style=display:flex><span>      a.panicTime = time.Time{}
+</span></span><span style=display:flex><span>      a.maxPanicPods = <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>      pkgmetrics.<span style=color:#50fa7b>Record</span>(a.reporterCtx, panicM.<span style=color:#50fa7b>M</span>(<span style=color:#bd93f9>0</span>))
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   desiredPodCount <span style=color:#ff79c6>:=</span> desiredStablePodCount
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> !a.panicTime.<span style=color:#50fa7b>IsZero</span>() {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// In some edgecases stable window metric might be larger
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// than panic one. And we should provision for stable as for panic,
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// so pick the larger of the two.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> desiredPodCount &lt; desiredPanicPodCount {
+</span></span><span style=display:flex><span>         desiredPodCount = desiredPanicPodCount
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;Operating in panic mode.&#34;</span>)
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We do not scale down while in panic mode. Only increases will be applied.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> desiredPodCount &gt; a.maxPanicPods {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Increasing pods count from %d to %d.&#34;</span>, originalReadyPodsCount, desiredPodCount)
+</span></span><span style=display:flex><span>         a.maxPanicPods = desiredPodCount
+</span></span><span style=display:flex><span>      } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> desiredPodCount &lt; a.maxPanicPods {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Skipping pod count decrease from %d to %d.&#34;</span>, a.maxPanicPods, desiredPodCount)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      desiredPodCount = a.maxPanicPods
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;Operating in stable mode.&#34;</span>)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Delay scale down decisions, if a ScaleDownDelay was specified.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// We only do this if there&#39;s a non-nil delayWindow because although a
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// one-element delay window is _almost_ the same as no delay at all, it is
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// not the same in the case where two Scale()s happen in the same time
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// interval (because the largest will be picked rather than the most recent
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// in that case).
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> a.delayWindow <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      a.delayWindow.<span style=color:#50fa7b>Record</span>(now, desiredPodCount)
+</span></span><span style=display:flex><span>      delayedPodCount <span style=color:#ff79c6>:=</span> a.delayWindow.<span style=color:#50fa7b>Current</span>()
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> delayedPodCount <span style=color:#ff79c6>!=</span> desiredPodCount {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> debugEnabled {
+</span></span><span style=display:flex><span>            desugared.<span style=color:#50fa7b>Debug</span>(
+</span></span><span style=display:flex><span>               fmt.<span style=color:#50fa7b>Sprintf</span>(<span style=color:#f1fa8c>&#34;Delaying scale to %d, staying at %d&#34;</span>,
+</span></span><span style=display:flex><span>                  desiredPodCount, delayedPodCount))
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         desiredPodCount = delayedPodCount
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Compute excess burst capacity
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// the excess burst capacity is based on panic value, since we don&#39;t want to
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// be making knee-jerk decisions about Activator in the request path.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// Negative EBC means that the deployment does not have enough capacity to serve
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// the desired burst off hand.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// EBC = TotCapacity - Cur#ReqInFlight - TargetBurstCapacity
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   excessBCF <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>-</span><span style=color:#bd93f9>1.</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>switch</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> spec.TargetBurstCapacity <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span>:
+</span></span><span style=display:flex><span>      excessBCF = <span style=color:#bd93f9>0</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> spec.TargetBurstCapacity &gt; <span style=color:#bd93f9>0</span>:
+</span></span><span style=display:flex><span>      totCap <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>float64</span>(originalReadyPodsCount) <span style=color:#ff79c6>*</span> spec.TotalValue
+</span></span><span style=display:flex><span>      excessBCF = math.<span style=color:#50fa7b>Floor</span>(totCap <span style=color:#ff79c6>-</span> spec.TargetBurstCapacity <span style=color:#ff79c6>-</span> observedPanicValue)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> debugEnabled {
+</span></span><span style=display:flex><span>      desugared.<span style=color:#50fa7b>Debug</span>(fmt.<span style=color:#50fa7b>Sprintf</span>(<span style=color:#f1fa8c>&#34;PodCount=%d Total1PodCapacity=%0.3f ObsStableValue=%0.3f ObsPanicValue=%0.3f TargetBC=%0.3f ExcessBC=%0.3f&#34;</span>,
+</span></span><span style=display:flex><span>         originalReadyPodsCount, spec.TotalValue, observedStableValue,
+</span></span><span style=display:flex><span>         observedPanicValue, spec.TargetBurstCapacity, excessBCF))
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>switch</span> spec.ScalingMetric {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> autoscaling.RPS:
+</span></span><span style=display:flex><span>      pkgmetrics.<span style=color:#50fa7b>RecordBatch</span>(a.reporterCtx,
+</span></span><span style=display:flex><span>         excessBurstCapacityM.<span style=color:#50fa7b>M</span>(excessBCF),
+</span></span><span style=display:flex><span>         desiredPodCountM.<span style=color:#50fa7b>M</span>(<span style=color:#8be9fd;font-style:italic>int64</span>(desiredPodCount)),
+</span></span><span style=display:flex><span>         stableRPSM.<span style=color:#50fa7b>M</span>(observedStableValue),
+</span></span><span style=display:flex><span>         panicRPSM.<span style=color:#50fa7b>M</span>(observedStableValue),
+</span></span><span style=display:flex><span>         targetRPSM.<span style=color:#50fa7b>M</span>(spec.TargetValue),
+</span></span><span style=display:flex><span>      )
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>      pkgmetrics.<span style=color:#50fa7b>RecordBatch</span>(a.reporterCtx,
+</span></span><span style=display:flex><span>         excessBurstCapacityM.<span style=color:#50fa7b>M</span>(excessBCF),
+</span></span><span style=display:flex><span>         desiredPodCountM.<span style=color:#50fa7b>M</span>(<span style=color:#8be9fd;font-style:italic>int64</span>(desiredPodCount)),
+</span></span><span style=display:flex><span>         stableRequestConcurrencyM.<span style=color:#50fa7b>M</span>(observedStableValue),
+</span></span><span style=display:flex><span>         panicRequestConcurrencyM.<span style=color:#50fa7b>M</span>(observedPanicValue),
+</span></span><span style=display:flex><span>         targetRequestConcurrencyM.<span style=color:#50fa7b>M</span>(spec.TargetValue),
+</span></span><span style=display:flex><span>      )
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> ScaleResult{
+</span></span><span style=display:flex><span>      DesiredPodCount:     desiredPodCount,
+</span></span><span style=display:flex><span>      ExcessBurstCapacity: <span style=color:#8be9fd;font-style:italic>int32</span>(excessBCF),
+</span></span><span style=display:flex><span>      ScaleValid:          <span style=color:#ff79c6>true</span>,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>我们简单看下在计算出缩放信息后<code>updateLatestScale</code>做的事情，这个函数的返回就是标志者是否要放到事件队列中触发下游的更新。这个函数的作用就是将副本信息放到<code>sr.decider.Status</code>中。<code>decider</code>看起来本来是一种k8s资源后来发现只需要存在内存中就可以了。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (sr <span style=color:#ff79c6>*</span>scalerRunner) <span style=color:#50fa7b>updateLatestScale</span>(sRes ScaleResult) <span style=color:#8be9fd>bool</span> {
+</span></span><span style=display:flex><span>	ret <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>	sr.mux.<span style=color:#50fa7b>Lock</span>()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> sr.mux.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> sr.decider.Status.DesiredScale <span style=color:#ff79c6>!=</span> sRes.DesiredPodCount {
+</span></span><span style=display:flex><span>		sr.decider.Status.DesiredScale = sRes.DesiredPodCount
+</span></span><span style=display:flex><span>		ret = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// If sign has changed -- then we have to update KPA.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	ret = ret <span style=color:#ff79c6>||</span> !<span style=color:#50fa7b>sameSign</span>(sr.decider.Status.ExcessBurstCapacity, sRes.ExcessBurstCapacity)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Update with the latest calculation anyway.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	sr.decider.Status.ExcessBurstCapacity = sRes.ExcessBurstCapacity
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> ret
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>然后调用Inform函数，这里的watcher函数就是将此事件通知到workQueue来进行后续处理。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Inform sends an update to the registered watcher function, if it is set.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>MultiScaler) <span style=color:#50fa7b>Inform</span>(event types.NamespacedName) <span style=color:#8be9fd>bool</span> {
+</span></span><span style=display:flex><span>   m.watcherMutex.<span style=color:#50fa7b>RLock</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> m.watcherMutex.<span style=color:#50fa7b>RUnlock</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> m.watcher <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      m.<span style=color:#50fa7b>watcher</span>(event)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// 上面函数中的m.watcher就是对应此函数，在pkg/reconciler/autoscaling/kpa/controller.go文件`NewController`函数中被赋值的
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// EnqueueKey takes a namespace/name string and puts it onto the work queue.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (c <span style=color:#ff79c6>*</span>Impl) <span style=color:#50fa7b>EnqueueKey</span>(key types.NamespacedName) {
+</span></span><span style=display:flex><span>	c.workQueue.<span style=color:#50fa7b>Add</span>(key)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> logger <span style=color:#ff79c6>:=</span> c.logger.<span style=color:#50fa7b>Desugar</span>(); logger.<span style=color:#50fa7b>Core</span>().<span style=color:#50fa7b>Enabled</span>(zapcore.DebugLevel) {
+</span></span><span style=display:flex><span>		logger.<span style=color:#50fa7b>Debug</span>(fmt.<span style=color:#50fa7b>Sprintf</span>(<span style=color:#f1fa8c>&#34;Adding to queue %s (depth: %d)&#34;</span>, <span style=color:#50fa7b>safeKey</span>(key), c.workQueue.<span style=color:#50fa7b>Len</span>()),
+</span></span><span style=display:flex><span>			zap.<span style=color:#50fa7b>String</span>(logkey.Key, key.<span style=color:#50fa7b>String</span>()))
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>Worker queue的内容最终会在processNextWorkItem函数中消费。这个函数就是一个集散中心是个通用的函数，每个crd都会有一个对应的controller实例，这里核心就是对<code>c.Reconciler.Reconcile</code>函数的调用，这个函数会根据具体情况决定后续执行<code>ReconcileKind</code>还是销毁后的清理还是观察。在当前情况下会转到kpa对应的<code>ReconcileKind</code>函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// processNextWorkItem will read a single work item off the workqueue and
+</span></span></span><span style=display:flex><span><span style=color:#6272a4>// attempt to process it, by calling Reconcile on our Reconciler.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (c <span style=color:#ff79c6>*</span>Impl) <span style=color:#50fa7b>processNextWorkItem</span>() <span style=color:#8be9fd>bool</span> {
+</span></span><span style=display:flex><span>   obj, shutdown <span style=color:#ff79c6>:=</span> c.workQueue.<span style=color:#50fa7b>Get</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> shutdown {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   key <span style=color:#ff79c6>:=</span> obj.(types.NamespacedName)
+</span></span><span style=display:flex><span>   keyStr <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>safeKey</span>(key)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   c.logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;Processing from queue %s (depth: %d)&#34;</span>, <span style=color:#50fa7b>safeKey</span>(key), c.workQueue.<span style=color:#50fa7b>Len</span>())
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   startTime <span style=color:#ff79c6>:=</span> time.<span style=color:#50fa7b>Now</span>()
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Send the metrics for the current queue depth
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   c.statsReporter.<span style=color:#50fa7b>ReportQueueDepth</span>(<span style=color:#8be9fd;font-style:italic>int64</span>(c.workQueue.<span style=color:#50fa7b>Len</span>()))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#8be9fd;font-style:italic>var</span> err <span style=color:#8be9fd>error</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>      status <span style=color:#ff79c6>:=</span> trueString
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         status = falseString
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      c.statsReporter.<span style=color:#50fa7b>ReportReconcile</span>(time.<span style=color:#50fa7b>Since</span>(startTime), status, key)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// We call Done here so the workqueue knows we have finished
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// processing this item. We also must remember to call Forget if
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// reconcile succeeds. If a transient error occurs, we do not call
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// Forget and put the item back to the queue with an increased
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// delay.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      c.workQueue.<span style=color:#50fa7b>Done</span>(key)
+</span></span><span style=display:flex><span>   }()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Embed the key into the logger and attach that to the context we pass
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// to the Reconciler.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   logger <span style=color:#ff79c6>:=</span> c.logger.<span style=color:#50fa7b>With</span>(zap.<span style=color:#50fa7b>String</span>(logkey.TraceID, uuid.<span style=color:#50fa7b>NewString</span>()), zap.<span style=color:#50fa7b>String</span>(logkey.Key, keyStr))
+</span></span><span style=display:flex><span>   ctx <span style=color:#ff79c6>:=</span> logging.<span style=color:#50fa7b>WithLogger</span>(context.<span style=color:#50fa7b>Background</span>(), logger)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Run Reconcile, passing it the namespace/name string of the
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// resource to be synced.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// 这个函数主要是根据节点是否是leader及是否是删除事件决定需要应用的函数是什么
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> err = c.Reconciler.<span style=color:#50fa7b>Reconcile</span>(ctx, keyStr); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      c.<span style=color:#50fa7b>handleErr</span>(logger, err, key, startTime)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Finally, if no error occurs we Forget this item so it does not
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// have any delay when another change happens.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   c.workQueue.<span style=color:#50fa7b>Forget</span>(key)
+</span></span><span style=display:flex><span>   logger.<span style=color:#50fa7b>Infow</span>(<span style=color:#f1fa8c>&#34;Reconcile succeeded&#34;</span>, zap.<span style=color:#50fa7b>Duration</span>(<span style=color:#f1fa8c>&#34;duration&#34;</span>, time.<span style=color:#50fa7b>Since</span>(startTime)))
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>后续会调用kpa（以实际缩放类型为准，如果缩放类型是kpa的话）的<code>ReconcileKind</code>，这个函数比较长，我们划一下重点：<code>ReconcileSKS</code>、<code>reconcileDecider</code>、<code>ReconcileMetric</code>、<code>want, err := c.scaler.scale(ctx, pa, sks, decider.Status.DesiredScale)</code>、<code>computeStatus</code>.其中 <code>ReconcileSKS</code>、<code>reconcileDecider</code>、<code>ReconcileMetric</code>都是对对应crd的更新，只有一个例外Decider它不是个实实在在创建到k8s的crd。其中<code>computeStatus</code>其实也是对crd的更新，只不过是更新<code>PodAutoscaler</code>.那么到目前还没有提到的<code>want, err := c.scaler.scale(ctx, pa, sks, decider.Status.DesiredScale)</code>函数就是做了实际对deployment进行缩放的逻辑。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (c <span style=color:#ff79c6>*</span>Reconciler) <span style=color:#50fa7b>ReconcileKind</span>(ctx context.Context, pa <span style=color:#ff79c6>*</span>autoscalingv1alpha1.PodAutoscaler) pkgreconciler.Event {
+</span></span><span style=display:flex><span>   ctx, cancel <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>WithTimeout</span>(ctx, <span style=color:#bd93f9>10</span><span style=color:#ff79c6>*</span>time.Second)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cancel</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   logger <span style=color:#ff79c6>:=</span> logging.<span style=color:#50fa7b>FromContext</span>(ctx)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// We need the SKS object in order to optimize scale to zero
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// performance. It is OK if SKS is nil at this point.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   sksName <span style=color:#ff79c6>:=</span> anames.<span style=color:#50fa7b>SKS</span>(pa.Name)
+</span></span><span style=display:flex><span>   sks, err <span style=color:#ff79c6>:=</span> c.SKSLister.<span style=color:#50fa7b>ServerlessServices</span>(pa.Namespace).<span style=color:#50fa7b>Get</span>(sksName)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> <span style=color:#ff79c6>&amp;&amp;</span> !errors.<span style=color:#50fa7b>IsNotFound</span>(err) {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Warnw</span>(<span style=color:#f1fa8c>&#34;Error retrieving SKS for Scaler&#34;</span>, zap.<span style=color:#50fa7b>Error</span>(err))
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Having an SKS and its PrivateServiceName is a prerequisite for all upcoming steps.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> sks <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> <span style=color:#ff79c6>||</span> sks.Status.PrivateServiceName <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Before we can reconcile decider and get real number of activators
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// we start with default of 2.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> _, err = c.<span style=color:#50fa7b>ReconcileSKS</span>(ctx, pa, nv1alpha1.SKSOperationModeServe, minActivators); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error reconciling SKS: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      pa.Status.<span style=color:#50fa7b>MarkSKSNotReady</span>(noPrivateServiceName) <span style=color:#6272a4>// In both cases this is true.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#50fa7b>computeStatus</span>(ctx, pa, podCounts{want: scaleUnknown}, logger)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   pa.Status.MetricsServiceName = sks.Status.PrivateServiceName
+</span></span><span style=display:flex><span>   decider, err <span style=color:#ff79c6>:=</span> c.<span style=color:#50fa7b>reconcileDecider</span>(ctx, pa)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error reconciling Decider: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> c.<span style=color:#50fa7b>ReconcileMetric</span>(ctx, pa, <span style=color:#50fa7b>resolveScrapeTarget</span>(ctx, pa)); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error reconciling Metric: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Get the appropriate current scale from the metric, and right size
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// the scaleTargetRef based on it.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   want, err <span style=color:#ff79c6>:=</span> c.scaler.<span style=color:#50fa7b>scale</span>(ctx, pa, sks, decider.Status.DesiredScale)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error scaling target: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 这里开始计算sks的模式应该是什么，当pod正常的时候就serve模式。模式代表的含义？
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   mode <span style=color:#ff79c6>:=</span> nv1alpha1.SKSOperationModeServe
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// We put activator in the serving path in the following cases:
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// 1. The revision is scaled to 0:
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//   a. want == 0
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//   b. want == -1 &amp;&amp; PA is inactive (Autoscaler has no previous knowledge of
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//       this revision, e.g. after a restart) but PA status is inactive (it was
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//       already scaled to 0).
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// 2. The excess burst capacity is negative.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> want <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> <span style=color:#ff79c6>||</span> decider.Status.ExcessBurstCapacity &lt; <span style=color:#bd93f9>0</span> <span style=color:#ff79c6>||</span> want <span style=color:#ff79c6>==</span> scaleUnknown <span style=color:#ff79c6>&amp;&amp;</span> pa.Status.<span style=color:#50fa7b>IsInactive</span>() {
+</span></span><span style=display:flex><span>      mode = nv1alpha1.SKSOperationModeProxy
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 根据reversion label获取所有的pod，根据每个pod的状态计算每种状态的pod有多少个。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// Compare the desired and observed resources to determine our situation.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   podCounter <span style=color:#ff79c6>:=</span> resourceutil.<span style=color:#50fa7b>NewPodAccessor</span>(c.podsLister, pa.Namespace, pa.Labels[serving.RevisionLabelKey])
+</span></span><span style=display:flex><span>   ready, notReady, pending, terminating, err <span style=color:#ff79c6>:=</span> podCounter.<span style=color:#50fa7b>PodCountsByState</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error getting pod counts: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// numActivators就是activator的数量
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>// Determine the amount of activators to put into the routing path.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   numActivators <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>computeNumActivators</span>(ready, decider)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;SKS should be in %s mode: want = %d, ebc = %d, #act&#39;s = %d PA Inactive? = %v&#34;</span>,
+</span></span><span style=display:flex><span>      mode, want, decider.Status.ExcessBurstCapacity, numActivators,
+</span></span><span style=display:flex><span>      pa.Status.<span style=color:#50fa7b>IsInactive</span>())
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 创建或者更新sks
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   sks, err = c.<span style=color:#50fa7b>ReconcileSKS</span>(ctx, pa, mode, numActivators)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error reconciling SKS: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Propagate service name.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   pa.Status.ServiceName = sks.Status.ServiceName
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If SKS is not ready — ensure we&#39;re not becoming ready.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> sks.<span style=color:#50fa7b>IsReady</span>() {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;SKS is ready, marking SKS status ready&#34;</span>)
+</span></span><span style=display:flex><span>      pa.Status.<span style=color:#50fa7b>MarkSKSReady</span>()
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;SKS is not ready, marking SKS status not ready&#34;</span>)
+</span></span><span style=display:flex><span>      pa.Status.<span style=color:#50fa7b>MarkSKSNotReady</span>(sks.Status.<span style=color:#50fa7b>GetCondition</span>(nv1alpha1.ServerlessServiceConditionReady).<span style=color:#50fa7b>GetMessage</span>())
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;PA scale got=%d, want=%d, desiredPods=%d ebc=%d&#34;</span>, ready, want,
+</span></span><span style=display:flex><span>      decider.Status.DesiredScale, decider.Status.ExcessBurstCapacity)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   pc <span style=color:#ff79c6>:=</span> podCounts{
+</span></span><span style=display:flex><span>      want:        <span style=color:#8be9fd;font-style:italic>int</span>(want),
+</span></span><span style=display:flex><span>      ready:       ready,
+</span></span><span style=display:flex><span>      notReady:    notReady,
+</span></span><span style=display:flex><span>      pending:     pending,
+</span></span><span style=display:flex><span>      terminating: terminating,
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Observed pod counts=%#v&#34;</span>, pc)
+</span></span><span style=display:flex><span>   <span style=color:#50fa7b>computeStatus</span>(ctx, pa, pc, logger)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>ReconcileMetric</code>定义在pkg/reconciler/autoscaling/reconciler.go文件中。根据kpa和scaler配置计算出目标metrics的crd。在配置没有变更的情况下，不会有更新，所以这个函数在大多数情况下是不会变动的。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// ReconcileMetric reconciles a metric instance out of the given PodAutoscaler to control metric collection.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (c <span style=color:#ff79c6>*</span>Base) <span style=color:#50fa7b>ReconcileMetric</span>(ctx context.Context, pa <span style=color:#ff79c6>*</span>autoscalingv1alpha1.PodAutoscaler, metricSN <span style=color:#8be9fd>string</span>) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   desiredMetric <span style=color:#ff79c6>:=</span> resources.<span style=color:#50fa7b>MakeMetric</span>(pa, metricSN, config.<span style=color:#50fa7b>FromContext</span>(ctx).Autoscaler)
+</span></span><span style=display:flex><span>   metric, err <span style=color:#ff79c6>:=</span> c.MetricLister.<span style=color:#50fa7b>Metrics</span>(desiredMetric.Namespace).<span style=color:#50fa7b>Get</span>(desiredMetric.Name)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> errors.<span style=color:#50fa7b>IsNotFound</span>(err) {
+</span></span><span style=display:flex><span>      _, err = c.Client.<span style=color:#50fa7b>AutoscalingV1alpha1</span>().<span style=color:#50fa7b>Metrics</span>(desiredMetric.Namespace).<span style=color:#50fa7b>Create</span>(ctx, desiredMetric, metav1.CreateOptions{})
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error creating metric: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error fetching metric: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> !metav1.<span style=color:#50fa7b>IsControlledBy</span>(metric, pa) {
+</span></span><span style=display:flex><span>      pa.Status.<span style=color:#50fa7b>MarkResourceNotOwned</span>(<span style=color:#f1fa8c>&#34;Metric&#34;</span>, desiredMetric.Name)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;PA: %s does not own Metric: %s&#34;</span>, pa.Name, desiredMetric.Name)
+</span></span><span style=display:flex><span>   } <span style=color:#ff79c6>else</span> <span style=color:#ff79c6>if</span> !equality.Semantic.<span style=color:#50fa7b>DeepEqual</span>(desiredMetric.Spec, metric.Spec) {
+</span></span><span style=display:flex><span>      want <span style=color:#ff79c6>:=</span> metric.<span style=color:#50fa7b>DeepCopy</span>()
+</span></span><span style=display:flex><span>      want.Spec = desiredMetric.Spec
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> _, err = c.Client.<span style=color:#50fa7b>AutoscalingV1alpha1</span>().<span style=color:#50fa7b>Metrics</span>(desiredMetric.Namespace).<span style=color:#50fa7b>Update</span>(ctx, want, metav1.UpdateOptions{}); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;error updating metric: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>scale</code>定义在<code>pkg/reconciler/autoscaling/kpa/scaler.go</code>中，功能是对目标进行缩放，主要是计算各种边界状态，并根据实际情况调用缩容到0和进行缩放的函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// scale attempts to scale the given PA&#39;s target reference to the desired scale.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (ks <span style=color:#ff79c6>*</span>scaler) <span style=color:#50fa7b>scale</span>(ctx context.Context, pa <span style=color:#ff79c6>*</span>autoscalingv1alpha1.PodAutoscaler, sks <span style=color:#ff79c6>*</span>nv1a1.ServerlessService, desiredScale <span style=color:#8be9fd>int32</span>) (<span style=color:#8be9fd>int32</span>, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>   asConfig <span style=color:#ff79c6>:=</span> config.<span style=color:#50fa7b>FromContext</span>(ctx).Autoscaler
+</span></span><span style=display:flex><span>   logger <span style=color:#ff79c6>:=</span> logging.<span style=color:#50fa7b>FromContext</span>(ctx)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> desiredScale &lt; <span style=color:#bd93f9>0</span> <span style=color:#ff79c6>&amp;&amp;</span> !pa.Status.<span style=color:#50fa7b>IsActivating</span>() {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;Metrics are not yet being collected.&#34;</span>)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   min, max <span style=color:#ff79c6>:=</span> pa.<span style=color:#50fa7b>ScaleBounds</span>(asConfig)
+</span></span><span style=display:flex><span>   initialScale <span style=color:#ff79c6>:=</span> kparesources.<span style=color:#50fa7b>GetInitialScale</span>(asConfig, pa)
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// Log reachability as quoted string, since default value is &#34;&#34;.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;MinScale = %d, MaxScale = %d, InitialScale = %d, DesiredScale = %d Reachable = %q&#34;</span>,
+</span></span><span style=display:flex><span>      min, max, initialScale, desiredScale, pa.Spec.Reachability)
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// If initial scale has been attained, ignore the initialScale altogether.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#ff79c6>if</span> initialScale &gt; <span style=color:#bd93f9>1</span> <span style=color:#ff79c6>&amp;&amp;</span> !pa.Status.<span style=color:#50fa7b>IsScaleTargetInitialized</span>() {
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Ignore initial scale if minScale &gt;= initialScale.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> min &lt; initialScale {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;Adjusting min to meet the initial scale: %d -&gt; %d&#34;</span>, min, initialScale)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      min = <span style=color:#50fa7b>intMax</span>(initialScale, min)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> newScale <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>applyBounds</span>(min, max, desiredScale); newScale <span style=color:#ff79c6>!=</span> desiredScale {
+</span></span><span style=display:flex><span>      logger.<span style=color:#50fa7b>Debugf</span>(<span style=color:#f1fa8c>&#34;Adjusting desiredScale to meet the min and max bounds before applying: %d -&gt; %d&#34;</span>, desiredScale, newScale)
+</span></span><span style=display:flex><span>      desiredScale = newScale
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   desiredScale, shouldApplyScale <span style=color:#ff79c6>:=</span> ks.<span style=color:#50fa7b>handleScaleToZero</span>(ctx, pa, sks, desiredScale)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> !shouldApplyScale {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 获取deployment
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   ps, err <span style=color:#ff79c6>:=</span> resources.<span style=color:#50fa7b>GetScaleResource</span>(pa.Namespace, pa.Spec.ScaleTargetRef, ks.listerFactory)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> desiredScale, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to get scale target %v: %w&#34;</span>, pa.Spec.ScaleTargetRef, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   currentScale <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>int32</span>(<span style=color:#bd93f9>1</span>)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> ps.Spec.Replicas <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      currentScale = <span style=color:#ff79c6>*</span>ps.Spec.Replicas
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> desiredScale <span style=color:#ff79c6>==</span> currentScale {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Scaling from %d to %d&#34;</span>, currentScale, desiredScale)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> desiredScale, ks.<span style=color:#50fa7b>applyScale</span>(ctx, pa, desiredScale, ps)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h4 id=对deployment副本数进行修改>对deployment副本数进行修改</h4><p>执行缩容到0的逻辑，todo仔细看看需要缩容到0的时候的逻辑判断</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (ks <span style=color:#ff79c6>*</span>scaler) <span style=color:#50fa7b>handleScaleToZero</span>(ctx context.Context, pa <span style=color:#ff79c6>*</span>autoscalingv1alpha1.PodAutoscaler,
+</span></span><span style=display:flex><span>   sks <span style=color:#ff79c6>*</span>nv1a1.ServerlessService, desiredScale <span style=color:#8be9fd>int32</span>) (<span style=color:#8be9fd>int32</span>, <span style=color:#8be9fd>bool</span>) {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> desiredScale <span style=color:#ff79c6>!=</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// We should only scale to zero when three of the following conditions are true:
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//   a) enable-scale-to-zero from configmap is true
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//   b) The PA has been active for at least the stable window, after which it
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//       gets marked inactive, and
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//   c) the PA has been backed by the Activator for at least the grace period
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//      of time.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//  Alternatively, if (a) and the revision did not succeed to activate in
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   <span style=color:#6272a4>//  `activationTimeout` time -- also scale it to 0.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   cfgs <span style=color:#ff79c6>:=</span> config.<span style=color:#50fa7b>FromContext</span>(ctx)
+</span></span><span style=display:flex><span>   cfgAS <span style=color:#ff79c6>:=</span> cfgs.Autoscaler
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> !cfgAS.EnableScaleToZero {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#bd93f9>1</span>, <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   cfgD <span style=color:#ff79c6>:=</span> cfgs.Deployment
+</span></span><span style=display:flex><span>   activationTimeout <span style=color:#ff79c6>:=</span> cfgD.ProgressDeadline <span style=color:#ff79c6>+</span> activationTimeoutBuffer
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   now <span style=color:#ff79c6>:=</span> time.<span style=color:#50fa7b>Now</span>()
+</span></span><span style=display:flex><span>   logger <span style=color:#ff79c6>:=</span> logging.<span style=color:#50fa7b>FromContext</span>(ctx)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>switch</span> {
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> pa.Status.<span style=color:#50fa7b>IsActivating</span>(): <span style=color:#6272a4>// Active=Unknown
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// If we are stuck activating for longer than our progress deadline, presume we cannot succeed and scale to 0.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#ff79c6>if</span> pa.Status.<span style=color:#50fa7b>CanFailActivation</span>(now, activationTimeout) {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Activation has timed out after &#34;</span>, activationTimeout)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      ks.<span style=color:#50fa7b>enqueueCB</span>(pa, activationTimeout)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> scaleUnknown, <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>case</span> pa.Status.<span style=color:#50fa7b>IsActive</span>(): <span style=color:#6272a4>// Active=True
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// Don&#39;t scale-to-zero if the PA is active
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// but return `(0, false)` to mark PA inactive, instead.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      sw <span style=color:#ff79c6>:=</span> aresources.<span style=color:#50fa7b>StableWindow</span>(pa, cfgAS)
+</span></span><span style=display:flex><span>      af <span style=color:#ff79c6>:=</span> pa.Status.<span style=color:#50fa7b>ActiveFor</span>(now)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> af <span style=color:#ff79c6>&gt;=</span> sw {
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// If SKS is in proxy mode, then there is high probability
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// of SKS not changing its spec/status and thus not triggering
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// a new reconciliation of PA.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>if</span> sks.Spec.Mode <span style=color:#ff79c6>==</span> nv1a1.SKSOperationModeProxy {
+</span></span><span style=display:flex><span>            logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;SKS is already in proxy mode, auto-re-enqueue PA&#34;</span>)
+</span></span><span style=display:flex><span>            <span style=color:#6272a4>// Long enough to ensure current iteration is finished.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>            ks.<span style=color:#50fa7b>enqueueCB</span>(pa, <span style=color:#bd93f9>3</span><span style=color:#ff79c6>*</span>time.Second)
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Can deactivate PA, was active for &#34;</span>, af)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Otherwise, scale down to at most 1 for the remainder of the idle period and then
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#6272a4>// reconcile PA again.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Sleeping additionally for %v before can scale to 0&#34;</span>, sw<span style=color:#ff79c6>-</span>af)
+</span></span><span style=display:flex><span>      ks.<span style=color:#50fa7b>enqueueCB</span>(pa, sw<span style=color:#ff79c6>-</span>af)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> <span style=color:#bd93f9>1</span>, <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>default</span>: <span style=color:#6272a4>// Active=False
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      <span style=color:#8be9fd;font-style:italic>var</span> (
+</span></span><span style=display:flex><span>         err <span style=color:#8be9fd>error</span>
+</span></span><span style=display:flex><span>         r   = <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>      )
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> <span style=color:#50fa7b>resolveTBC</span>(ctx, pa) <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>-</span><span style=color:#bd93f9>1</span> {
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// if TBC is -1 activator is guaranteed to already be in the path.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// Otherwise, probe to make sure Activator is in path.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         r, err = ks.<span style=color:#50fa7b>activatorProbe</span>(pa, ks.transport)
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Probing activator = %v, err = %v&#34;</span>, r, err)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> r {
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// This enforces that the revision has been backed by the Activator for at least
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// ScaleToZeroGracePeriod time.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// And at least ScaleToZeroPodRetentionPeriod since PA became inactive.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Most conservative check, if it passes we&#39;re good.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         lastPodTimeout <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>lastPodRetention</span>(pa, cfgAS)
+</span></span><span style=display:flex><span>         lastPodMaxTimeout <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>durationMax</span>(cfgAS.ScaleToZeroGracePeriod, lastPodTimeout)
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// If we have been inactive for this long, we can scale to 0!
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>if</span> pa.Status.<span style=color:#50fa7b>InactiveFor</span>(now) <span style=color:#ff79c6>&gt;=</span> lastPodMaxTimeout {
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Now check last pod retention timeout. Since it&#39;s a hard deadline, regardless
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// of network programming state we should circle back after that time period.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#ff79c6>if</span> lastPodTimeout &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>if</span> inactiveTime <span style=color:#ff79c6>:=</span> pa.Status.<span style=color:#50fa7b>InactiveFor</span>(now); inactiveTime &lt; lastPodTimeout {
+</span></span><span style=display:flex><span>               logger.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;Can&#39;t scale to 0; InactiveFor %v &lt; ScaleToZeroPodRetentionPeriod = %v&#34;</span>,
+</span></span><span style=display:flex><span>                  inactiveTime, lastPodTimeout)
+</span></span><span style=display:flex><span>               ks.<span style=color:#50fa7b>enqueueCB</span>(pa, lastPodTimeout<span style=color:#ff79c6>-</span>inactiveTime)
+</span></span><span style=display:flex><span>               <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>            }
+</span></span><span style=display:flex><span>            logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;Last pod timeout satisfied&#34;</span>)
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Otherwise check how long SKS was in proxy mode.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// Compute the difference between time we&#39;ve been proxying with the timeout.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// If it&#39;s positive, that&#39;s the time we need to sleep, if negative -- we
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// can scale to zero.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         pf <span style=color:#ff79c6>:=</span> sks.Status.<span style=color:#50fa7b>ProxyFor</span>()
+</span></span><span style=display:flex><span>         to <span style=color:#ff79c6>:=</span> cfgAS.ScaleToZeroGracePeriod <span style=color:#ff79c6>-</span> pf
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>if</span> to <span style=color:#ff79c6>&lt;=</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>            logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Fast path scaling to 0, in proxy mode for: &#34;</span>, pf)
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>true</span>
+</span></span><span style=display:flex><span>         }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>         <span style=color:#6272a4>// Re-enqueue the PA for reconciliation with timeout of `to` to make sure we wait
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         <span style=color:#6272a4>// long enough.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>         logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Enqueueing PA after &#34;</span>, to)
+</span></span><span style=display:flex><span>         ks.<span style=color:#50fa7b>enqueueCB</span>(pa, to)
+</span></span><span style=display:flex><span>         <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>      <span style=color:#6272a4>// Otherwise (any prober failure) start the async probe.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>      logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;PA is not yet backed by activator, cannot scale to zero&#34;</span>)
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>if</span> !ks.probeManager.<span style=color:#50fa7b>Offer</span>(context.<span style=color:#50fa7b>Background</span>(), <span style=color:#50fa7b>paToProbeTarget</span>(pa), pa, probePeriod, probeTimeout, probeOptions<span style=color:#ff79c6>...</span>) {
+</span></span><span style=display:flex><span>         logger.<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;Probe for revision is already in flight&#34;</span>)
+</span></span><span style=display:flex><span>      }
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> desiredScale, <span style=color:#ff79c6>false</span>
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>应用缩放，其核心的逻辑就是根据<code>PodAutoscaler</code>引用的deployment数据<code>gvr</code>，创建修改副本数量的patch来修改对应的deployment。</p><p>ScaleTargetRef指向的是deployment，获取dep应用计算出来的patch，其中patch的内容就是将deployment的Replicas数量改为希望的数量，然后进行patch。patchBytes的一个例子:<code>[{"op":"replace","path":"/spec/replicas","value":0}]</code></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (ks <span style=color:#ff79c6>*</span>scaler) <span style=color:#50fa7b>applyScale</span>(ctx context.Context, pa <span style=color:#ff79c6>*</span>autoscalingv1alpha1.PodAutoscaler, desiredScale <span style=color:#8be9fd>int32</span>,
+</span></span><span style=display:flex><span>   ps <span style=color:#ff79c6>*</span>autoscalingv1alpha1.PodScalable) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>   logger <span style=color:#ff79c6>:=</span> logging.<span style=color:#50fa7b>FromContext</span>(ctx)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   <span style=color:#6272a4>// 获取引用的deployment
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>   gvr, name, err <span style=color:#ff79c6>:=</span> resources.<span style=color:#50fa7b>ScaleResourceArguments</span>(pa.Spec.ScaleTargetRef)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   psNew <span style=color:#ff79c6>:=</span> ps.<span style=color:#50fa7b>DeepCopy</span>()
+</span></span><span style=display:flex><span>   psNew.Spec.Replicas = <span style=color:#ff79c6>&amp;</span>desiredScale
+</span></span><span style=display:flex><span>   patch, err <span style=color:#ff79c6>:=</span> duck.<span style=color:#50fa7b>CreatePatch</span>(ps, psNew)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>   patchBytes, err <span style=color:#ff79c6>:=</span> patch.<span style=color:#50fa7b>MarshalJSON</span>()
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   _, err = ks.dynamicClient.<span style=color:#50fa7b>Resource</span>(<span style=color:#ff79c6>*</span>gvr).<span style=color:#50fa7b>Namespace</span>(pa.Namespace).<span style=color:#50fa7b>Patch</span>(ctx, ps.Name, types.JSONPatchType,
+</span></span><span style=display:flex><span>      patchBytes, metav1.PatchOptions{})
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to apply scale %d to scale target %s: %w&#34;</span>, desiredScale, name, err)
+</span></span><span style=display:flex><span>   }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>   logger.<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;Successfully scaled to &#34;</span>, desiredScale)
+</span></span><span style=display:flex><span>   <span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>参考资料：</p><p><a href=https://kubernetes.io/zh/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/>给容器配置存活、就绪和启动探测器</a></p><p><a href></a></p><hr><ul class=pager><li class=previous><a href=/2021/12/01/2021-12-01-knative-crd.md/ data-toggle=tooltip data-placement=top title="Knative CRD">&larr;
+Previous Post</a></li><li class=next><a href=/2021/12/01/2021-12-01-knative-queue.md/ data-toggle=tooltip data-placement=top title="Knative Queue">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>

@@ -1,0 +1,116 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Spin介绍"><meta property="og:title" content="Spin介绍"><meta property="twitter:title" content="Spin介绍"><meta name=description content="Spin是一个使用WebAssembly组件构建和运行事件驱动的微服务应用程序的框架。即用于实际执行WebAssembly程序。
+通过[这个案例](https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related)也能更多看到fermyon的具体架构。简单的画了一下其架构"><meta property="og:description" content="Spin是一个使用WebAssembly组件构建和运行事件驱动的微服务应用程序的框架。即用于实际执行WebAssembly程序。
+通过[这个案例](https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related)也能更多看到fermyon的具体架构。简单的画了一下其架构"><meta property="twitter:description" content="Spin是一个使用WebAssembly组件构建和运行事件驱动的微服务应用程序的框架。即用于实际执行WebAssembly程序。
+通过[这个案例](https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related)也能更多看到fermyon的具体架构。简单的画了一下其架构"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Spin介绍 | 张超的博客 | Taction Blog</title><link rel=canonical href=/2023/02/11/2023-02-11-spin-introduction.md/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/about//>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/spin title=spin>spin</a></div><h1>Spin介绍</h1><h2 class=subheading></h2><span class=meta>Posted by
+Taction
+on
+Saturday, February 11, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h3 id=介绍>介绍</h3><p>hippo是一个WebAssembly PaaS平台，用于创建基于WebAssembly的微服务和Web应用程序。它提供了一个基于浏览器的门户、一个用于客户端CLI的API以及后端管理特性，以便与Bindle服务器、负载平衡器和Spin一起工作。Hippo平台的管理员使用nomad配置和安装Hippo的组件。服务发现、应用程序调度和联网都委托给了nomad，而Hippo则提供了干净简单的开发者体验。</p><p>Bindle 可以认为是WebAssembly的版本化包管理工具，用于存储和获取WebAssembly程序，实际上它可以存储任意类型的数据，如WebAssembly模块、Templates、Web files such as HTML, CSS, JavaScript, and images、Machine learning models、以及任何你的应用程序依赖的文件。</p><p>路由器组件是Hippo平台的一部分，负责将HTTP/s流量路由到应用程序，并代理平台API流量。由Yet-Another-Reverse-Proxy（YARP）项目提供。</p><p>Spin是一个使用WebAssembly组件构建和运行事件驱动的微服务应用程序的框架。即用于实际执行WebAssembly程序。</p><p>通过<a href="https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related">这个案例</a>也能更多看到fermyon的具体架构。简单的画了一下其架构</p><p><img src=https://image-1255620078.cos.ap-nanjing.myqcloud.com/image-20230206181355757.png alt=image-20230206181355757></p><h3 id=准备>准备</h3><blockquote><p>在Ubuntu环境下安装可以遵循以下命令教程，否则请参考<a href=https://github.com/fermyon/installer/blob/main/local/README.md>原教程</a></p></blockquote><h4 id=nomad>Nomad</h4><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>sudo apt-get install software-properties-common
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>curl -fsSL https://apt.releases.hashicorp.com/gpg | sudo apt-key add -
+</span></span><span style=display:flex><span>sudo apt-add-repository <span style=color:#f1fa8c>&#34;deb [arch=amd64] https://apt.releases.hashicorp.com </span><span style=color:#ff79c6>$(</span>lsb_release -cs<span style=color:#ff79c6>)</span><span style=color:#f1fa8c> main&#34;</span>
+</span></span><span style=display:flex><span>sudo apt-get update <span style=color:#ff79c6>&amp;&amp;</span> sudo apt-get install nomad
+</span></span></code></pre></div><h4 id=consul>Consul</h4><p><a href=https://developer.hashicorp.com/consul/downloads>install consul</a></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>wget -O- https://apt.releases.hashicorp.com/gpg | gpg --dearmor | sudo tee /usr/share/keyrings/hashicorp-archive-keyring.gpg
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>echo</span> <span style=color:#f1fa8c>&#34;deb [signed-by=/usr/share/keyrings/hashicorp-archive-keyring.gpg] https://apt.releases.hashicorp.com </span><span style=color:#ff79c6>$(</span>lsb_release -cs<span style=color:#ff79c6>)</span><span style=color:#f1fa8c> main&#34;</span> | sudo tee /etc/apt/sources.list.d/hashicorp.list
+</span></span><span style=display:flex><span>sudo apt update <span style=color:#ff79c6>&amp;&amp;</span> sudo apt install consul
+</span></span></code></pre></div><h4 id=spin>Spin</h4><p><a href=https://developer.fermyon.com/spin/quickstart/>spin quick starts</a></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>curl -fsSL https://developer.fermyon.com/downloads/install.sh | bash
+</span></span><span style=display:flex><span>sudo mv ./spin /usr/local/bin/spin
+</span></span></code></pre></div><h4 id=tinygo>tinygo</h4><p>仅在需要编译tinygo wasm程序时需要安装,<a href=https://tinygo.org/getting-started/install/linux/#arch-linux>教程</a></p><pre tabindex=0><code>wget https://github.com/tinygo-org/tinygo/releases/download/v0.26.0/tinygo_0.26.0_amd64.deb
+sudo dpkg -i tinygo_0.26.0_amd64.deb
+export PATH=$PATH:/usr/local/bin
+tinygo version
+</code></pre><h3 id=启动>启动</h3><blockquote><p>以本地模式启动https://github.com/fermyon/installer/blob/main/local/README.md</p></blockquote><p>通过执行<code>./start.sh</code>脚本来部署本地环境。这个脚本做的事情比较清晰。</p><ol><li>判断机器系统是否支持</li><li>判断 consul、nomad、spin命令是否存在</li><li>删除data目录，创建log目录用来存放启动过程中的日志</li><li>启动consul</li><li>启动nomad</li><li>通过nomad启动traefik，启动的nomad定义在job下</li><li>通过nomad启动bindle、hippo，定义都在job目录下</li><li>等待hippo可访问，输出以上各项的访问地址</li></ol><p>命令行界面会输出一些export命令，另开一个命令行终端并执行这些命令，打开http://hippo.local.fermyon.link/页面注册一个账户，并在Teminal中执行以下命令</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>HIPPO_USERNAME</span><span style=color:#ff79c6>=</span>&lt;username&gt;
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>export</span> <span style=color:#8be9fd;font-style:italic>HIPPO_PASSWORD</span><span style=color:#ff79c6>=</span>&lt;password&gt;
+</span></span></code></pre></div><h3 id=运行一个wasm程序>运行一个wasm程序</h3><h5 id=安装模板>安装模板</h5><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>spin templates install --git https://github.com/fermyon/spin
+</span></span></code></pre></div><p>安装完成后可以通过<code>spin templates list</code>命令来查看已安装的模板。</p><h5 id=新建一个wasm程序>新建一个wasm程序</h5><p>通过<code>spin new</code>命令可以根据模板创建一个wasm项目，由于我个人对go比较熟悉，我们先创建一个go的项目使用http trigger。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>$ spin new
+</span></span><span style=display:flex><span>Pick a template to start your project with:
+</span></span><span style=display:flex><span>  http-c <span style=color:#ff79c6>(</span>HTTP request handler using C and the Zig toolchain<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  http-csharp <span style=color:#ff79c6>(</span>HTTP request handler using C# <span style=color:#ff79c6>(</span>EXPERIMENTAL<span style=color:#ff79c6>))</span>
+</span></span><span style=display:flex><span>&gt; http-go <span style=color:#ff79c6>(</span>HTTP request handler using <span style=color:#ff79c6>(</span>Tiny<span style=color:#ff79c6>)</span>Go<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  http-grain <span style=color:#ff79c6>(</span>HTTP request handler using Grain<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  http-rust <span style=color:#ff79c6>(</span>HTTP request handler using Rust<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  http-swift <span style=color:#ff79c6>(</span>HTTP request handler using SwiftWasm<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  http-zig <span style=color:#ff79c6>(</span>HTTP request handler using Zig<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  redis-go <span style=color:#ff79c6>(</span>Redis message handler using <span style=color:#ff79c6>(</span>Tiny<span style=color:#ff79c6>)</span>Go<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>  redis-rust <span style=color:#ff79c6>(</span>Redis message handler using Rust<span style=color:#ff79c6>)</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Enter a name <span style=color:#ff79c6>for</span> your new project: hello_rust
+</span></span><span style=display:flex><span>Project description: My first Rust Spin application
+</span></span><span style=display:flex><span>HTTP base: /
+</span></span><span style=display:flex><span>HTTP path: /...
+</span></span><span style=display:flex><span>$ tree
+</span></span><span style=display:flex><span>├── .cargo
+</span></span><span style=display:flex><span>│   └── config.toml
+</span></span><span style=display:flex><span>├── .gitignore
+</span></span><span style=display:flex><span>├── Cargo.toml
+</span></span><span style=display:flex><span>├── spin.toml
+</span></span><span style=display:flex><span>└── src
+</span></span><span style=display:flex><span>    └── lib.rs
+</span></span></code></pre></div><p>项目主目录下的<code>spin.toml</code>文件定义的就是这个spin项目的配置清单文件:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-toml data-lang=toml><span style=display:flex><span>spin_version = <span style=color:#f1fa8c>&#34;1&#34;</span>
+</span></span><span style=display:flex><span>authors = [<span style=color:#f1fa8c>&#34;zhangchao &lt;zchao9100@gmail.com&gt;&#34;</span>]
+</span></span><span style=display:flex><span>description = <span style=color:#f1fa8c>&#34;a spin http handler in go for wasm&#34;</span>
+</span></span><span style=display:flex><span>name = <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>
+</span></span><span style=display:flex><span>trigger = { type = <span style=color:#f1fa8c>&#34;http&#34;</span>, base = <span style=color:#f1fa8c>&#34;/&#34;</span> }
+</span></span><span style=display:flex><span>version = <span style=color:#f1fa8c>&#34;0.1.0&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>[[component]]
+</span></span><span style=display:flex><span>id = <span style=color:#f1fa8c>&#34;spinhttpgo&#34;</span>
+</span></span><span style=display:flex><span>source = <span style=color:#f1fa8c>&#34;main.wasm&#34;</span>
+</span></span><span style=display:flex><span>[component.trigger]
+</span></span><span style=display:flex><span>route = <span style=color:#f1fa8c>&#34;/hello&#34;</span>
+</span></span><span style=display:flex><span>[component.build]
+</span></span><span style=display:flex><span>command = <span style=color:#f1fa8c>&#34;tinygo build -wasm-abi=generic -target=wasi -gc=leaking -no-debug -o main.wasm main.go&#34;</span>
+</span></span></code></pre></div><p>运行<code>spin build</code>命令会执行上面文件中的comman命令来编译wasm程序。执行完成后在项目目录下会新增一个<code>main.wasm</code>文件。</p><h5 id=源码>源码</h5><p>项目源码非常简单，胶水代码已经包含在spin sdk中，只需要在函数中实现自己的业务逻辑就行，对于这个demo来说就是在网络请求时返回纯文本<code>Hello Fermyon!</code>.</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;fmt&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;net/http&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	spinhttp <span style=color:#f1fa8c>&#34;github.com/fermyon/spin/sdk/go/http&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>init</span>() {
+</span></span><span style=display:flex><span>	spinhttp.<span style=color:#50fa7b>Handle</span>(<span style=color:#8be9fd;font-style:italic>func</span>(w http.ResponseWriter, r <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>		w.<span style=color:#50fa7b>Header</span>().<span style=color:#50fa7b>Set</span>(<span style=color:#f1fa8c>&#34;Content-Type&#34;</span>, <span style=color:#f1fa8c>&#34;text/plain&#34;</span>)
+</span></span><span style=display:flex><span>		fmt.<span style=color:#50fa7b>Fprintln</span>(w, <span style=color:#f1fa8c>&#34;Hello Fermyon!&#34;</span>)
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {}
+</span></span></code></pre></div><h5 id=运行wasm程序>运行wasm程序</h5><p>通过<code>spin up</code>命令可以运行wasm程序</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>$ spin up
+</span></span><span style=display:flex><span>Serving HTTP on address http://127.0.0.1:3000
+</span></span><span style=display:flex><span>Available Routes:
+</span></span><span style=display:flex><span>  spin-hello-world: http://127.0.0.1:3000/hello
+</span></span></code></pre></div><p>访问<code>http://127.0.0.1:3000/hello</code>即可看到wasm程序运行的结果：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-bash data-lang=bash><span style=display:flex><span>$ curl -i localhost:3000/hello
+</span></span><span style=display:flex><span>HTTP/1.1 <span style=color:#bd93f9>200</span> OK
+</span></span><span style=display:flex><span>content-type: text/plain
+</span></span><span style=display:flex><span>content-length: <span style=color:#bd93f9>15</span>
+</span></span><span style=display:flex><span>date: Mon, <span style=color:#bd93f9>12</span> Feb <span style=color:#bd93f9>2023</span> 07:49:01 GMT
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>Hello Fermyon!
+</span></span></code></pre></div><h3 id=部署到云端>部署到云端</h3><p>通过<code>spin deploy</code>命令可以将程序部署到Fermyon云端运行。</p><h3 id=spin-与-wasmcloud异同点分析>Spin 与 wasmcloud异同点分析</h3><blockquote><p>个人对这两个项目的了解，其中难免有疏漏之处，若有不妥之处，望不吝赐教。</p></blockquote><h5 id=interface定义>interface定义</h5><p>spin 使用wasm component model来定义API，这样的好处是可以复用工具链来生成模板代码，对多语言的支持上来说所需要做的努力更少。</p><p>wasmcloud是通过代码生成，自己从0构建了一套开发者使用工具，并且生成的代码更容易使用，有些框架层的模板代码给你一起生成了（主要针对component，wasm的开发来说两者基本差不多）。</p><h5 id=可扩展性或者说用户自定义interface>可扩展性或者说用户自定义interface</h5><p>spin的wasm程序与“环境”进行交互可以通过http trigger获取http的能力，通过wasi获取wasi中定义的系统能力。触发wasm程序执行除了内置的http和redis外，用户可以利用spin提供的库自己开发程序。</p><p>wasmcloud有capability模型，用户可以通过自定义interface开发Provider（提供能力）和actor（wasm程序），wasmcloud的工具会生成sdk（目前支持rust和tinygo）来简化开发避免模板代码，使用户专注于逻辑代码。</p><h5 id=wasm程序与能力提供程序交互>wasm程序与能力提供程序交互</h5><p>spin来说是通过函数调用的方式来调用runtime提供的方法。</p><p>wasmcloud做了一层异步的rpc解耦封装。wasm程序调用的是将消息序列化后调用runtime一个固定的方法，runtime将信息发布到nats（消息通信组件，团队正在尝试支持其他的），Provider订阅发给自己的消息，执行对应的函数，如果是wasm调用Provider就还需要将结果发回nats中。这样就在中间引入了消息队列和更多的网络和序列化开销。</p><h5 id=学习成本>学习成本</h5><p>spin会低一点，用户唯一做的就是基于sdk来开发自己的应用，更适合只需要获取wasi提供的能力和网络能力的。如果要</p><p>wasmcloud因为系统中涉及的模块多，所以会高一些，至少你需要搞懂什么是Provider、actor、link。但是有UI界面和比较好的文档支持，所以个人觉得也还行。</p><h3 id=参考>参考</h3><p><a href=https://docs.hippofactory.dev/topics/architecture/>https://docs.hippofactory.dev/topics/architecture/</a></p><p><a href=https://github.com/WebAssembly/component-model>https://github.com/WebAssembly/component-model</a></p><p><a href=https://www.fermyon.com/blog/webassembly-component-model>https://www.fermyon.com/blog/webassembly-component-model</a></p><p><a href=https://radu-matei.com/blog/intro-wasm-components/>https://radu-matei.com/blog/intro-wasm-components/</a></p><p><a href="https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related">https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related</a></p><p><a href=https://www.fermyon.com/blog/spin-nomad>https://www.fermyon.com/blog/spin-nomad</a></p><p><a href="https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related">https://www.fermyon.com/blog/scale-to-zero-problem?&amp;utm_medium=blog&amp;utm_campaign=related</a></p><hr><ul class=pager><li class=previous><a href=/2022/11/28/2022-11-28-dockerWasmPreview.md/ data-toggle=tooltip data-placement=top title="运行docker wasm preview 失败教程">&larr;
+Previous Post</a></li><li class=next><a href=/2023/02/11/2023-02-11-spin-up-sourcecode.md/ data-toggle=tooltip data-placement=top title="Spin up 源码分析">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>
