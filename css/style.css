@@ -2721,12 +2721,3 @@ If you want to make CSS edits, use the "Custom CSS" section in the Customizer in
 If you want more information about customizing Tracks with CSS, check out this guide: https://www.competethemes.com/help/custom-css-tracks/
 
 */
-
-header.intro-header:before {
-  content: "";
-  position: absolute;
-  background: rgba(0,0,0,0.6);
-  z-index: 0;
-  width: 100%;
-  height: 100%;
-}
