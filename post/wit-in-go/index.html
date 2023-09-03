@@ -1,0 +1,191 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="WebAssembly Component Model介绍及如何与go语言结合"><meta property="og:title" content="WebAssembly Component Model介绍及如何与go语言结合"><meta property="twitter:title" content="WebAssembly Component Model介绍及如何与go语言结合"><meta name=description content="本文介绍使用WebAssembly Component Model定义的ABI，如何实现其go语言的sdk，包括guest和host的sdk。"><meta property="og:description" content="本文介绍使用WebAssembly Component Model定义的ABI，如何实现其go语言的sdk，包括guest和host的sdk。"><meta property="twitter:description" content="本文介绍使用WebAssembly Component Model定义的ABI，如何实现其go语言的sdk，包括guest和host的sdk。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>WebAssembly Component Model介绍及如何与go语言结合 | 张超的博客 | Taction Blog</title><link rel=canonical href=/post/wit-in-go/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/bg.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/taction_about/>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/webassembly title=webassembly>webassembly</a>
+<a class=tag href=/tags/wit title=wit>wit</a></div><h1>WebAssembly Component Model介绍及如何与go语言结合</h1><h2 class=subheading></h2><span class=meta>Posted by
+    "taction"
+on
+Monday, August 21, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>TL;DR 本文介绍使用WebAssembly Component Model定义的ABI，如何实现其go语言的sdk，包括guest和host的sdk。</p><h3 id=基本介绍>基本介绍</h3><p>WebAssembly 组件模型是一个WebAssembly <a href=https://github.com/WebAssembly/proposals>提案</a>，旨在通过定义模块在应用程序或库中如何组合来构建核心 WebAssembly 标准。简单来说这是一个如何定义组件的标准。WASI现在正在使用Component Model所定义的格式来定义自己的ABI接口。由于这是一个WebAssembly社区关于组件标准的提案，所以它可能更具有生命力，成为一个最终标准。本文就主要介绍它是什么以及在go语言中该如何使用。</p><h4 id=从开发webassembly说起>从开发WebAssembly说起</h4><p>WebAssembly（Wasm）是一种通用字节码技术，可以通过其他编程语言（如 Go、Rust、C/C++ 等）的程序代码编译为字节码程序。WebAssembly 天生具备安全、可移植、高效率，轻量化等特点，所以非常适于应用安全沙箱场景。除了浏览器领域，WebAssembly 还得到了容器、函数计算、IoT / 边缘计算等社区的广泛关注。</p><p>Wasm虚拟机提供沙箱和内存隔离机制](<a href=https://webassembly.org/docs/security/>https://webassembly.org/docs/security/</a>)，允许Wasm程序调用运行时(Host)或者其他Wasm模块提供的函数，可以类比于正常程序的系统调用。我们可以将Wasm大致分为两个部分：Host也就是其运行时，Guest也就是Wasm二进制程序。</p><p>当我们把Wasm看作是在虚拟机中运行时纯逻辑函数时，它需要跟操作系统或者其他功能函数交互，比如网络或者存储。我们假定这些函数都由Host提供，那么我们就需要定义这些函数的ABI，使得Guest能够调用这些函数，反之亦然。而且Wasm只支持4种基本类型int32、int64、float32、float64，所有的数据结构都需要转化为这4种基本类型。</p><p>当我们需要自己定义一组ABI函数的时候，一个典型的开发流程是，首先定义ABI格式，然后分别实现Guest和host的sdk，在sdk中实现方法调用以及参数的序列化。通常对于guest sdk来说需要考虑实现多种语言的SDK，因为Wasm程序支持从多种语言编译而来。</p><h4 id=目标>目标</h4><p>定义一个可移植的、加载和运行时高效的二进制格式，用于从WebAssembly核心模块构建的单独编译的组件，这些组件支持可移植的、跨语言组合。</p><p>支持可移植、可虚拟化、可静态分析、能力安全、语言无关的接口的定义，尤其是WASI定义的接口。</p><p>维护和提升WebAssembly独特的价值主张：</p><ul><li>语言中立：避免将组件模型偏向于仅一种语言或语言族。</li><li>嵌入性：设计要嵌入到各种主机执行环境中的组件，包括浏览器、服务器、中介、小型设备和数据密集型系统。</li><li>可优化性：最大限度地提高Aahe-of-Time编译器可用的静态信息，以最小化实例化和启动的成本。</li><li>Web平台集成：通过扩展现有的WebAssembly集成点，确保组件能够在浏览器中获得原生支持：JS API、Web API和ESM集成。在实现本机支持之前，确保组件可以通过提前编译到当前支持的浏览器功能，在浏览器中进行多变量填充。</li></ul><p><a href="https://link.zhihu.com/?target=https%3A//webassembly.github.io/spec/core/">WebAssembly规范</a>定义了一种体系结构、平台和语言无关的可执行代码格式。WebAssembly模块可以从主机运行时导入函数、全局变量等，也可以将这些项导出到主机。然而，在运行时没有标准的方式来合并模块，也没有标准的方式来跨模块边界传递高级类型（例如字符串和map）。</p><p>实际上，缺乏模块组合意味着模块必须在构建时静态链接，而不能在运行时动态链接，并且它们不能以标准、便携的方式与其他模块通信。组件模型通过在核心WebAssembly之上主要提供了以下功能或特点：</p><ul><li><a href="https://link.zhihu.com/?target=https%3A//github.com/bytecodealliance/wit-bindgen/blob/main/WIT.md">接口类型</a>：一种语言无关的方式，用于基于高级类型（如字符串、记录、集合等）定义模块接口。</li><li><a href="https://link.zhihu.com/?target=https%3A//github.com/WebAssembly/component-model/blob/main/design/mvp/CanonicalABI.md">规范ABI</a>，它指定高级类型如何以核心WebAssembly的低级类型来表示。</li><li>模块和组件链接：一种动态组合模块成为组件的机制。这些组件本身可以组合在一起形成更高级的组件。</li><li>语言中立和跨语言：用于从WebAssembly核心模块构建的单独编译的组件，这些组件支持可移植的、跨语言组合。避免将组件模型偏向于仅一种语言或语言族。</li></ul><p>这些功能共同允许在没有静态链接的重复和安全漏洞的情况下打包和重用代码。这种重用特别适用于多租户云计算，其中成千上万个模块的代码重复会增加昂贵的存储和内存开销。</p><h3 id=组件模型的接口描述语言---wit>组件模型的接口描述语言 - WIT</h3><p>WIT（Wasm Interface Type） 是WebAssembly组件模型的一种IDL（接口描述语言），其主要作用在于以下两方面：</p><ul><li>WIT是一种对开发人员友好的格式，用于描述组件的导入和导出。它易于读写，并为从Guest语言生成组件以及在Host语言使用组件提供了基础。</li><li>WIT包是组件生态系统中共享类型和定义的基础。开发者可以在生成组件时从其他WIT包导入类型，发布表示主机嵌入的WIT包，或协作定义跨平台共享API集的WIT定义。</li></ul><p>WIT包是在同一目录中的文件中定义的WIT <code>interface</code> 和 <code>world</code> 的集合，这些文件都使用文件扩展名 <code>wit</code> ，例如 <code>foo.wit</code> 。文件被编码为有效的utf-8字节。类型可以在包内的接口之间导入，也可以通过ID从其他包导入。</p><p>本文不对wit语法结构进行过多介绍，在后文中会以案例来介绍使用wit定义的接口如何与go语言结合。如果你有兴趣了解更多<a href=https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md>可以查看</a></p><h3 id=在go语言中如何使用>在go语言中如何使用</h3><p>我们可以通过<a href=https://github.com/bytecodealliance/wit-bindgen>wit-bindgen</a>来快捷的生成guest sdk的代码，目前支持c\c++、rust、java、go等语言。你可以通过命令<code>cargo install --git https://github.com/bytecodealliance/wit-bindgen wit-bindgen-cli</code>进行安装，或者到<a href=https://github.com/bytecodealliance/wit-bindgen/releases>releases</a>中手动下载安装。</p><p>我们先通过一个简单的例子，它具有两个导出函数，其中<code>swap</code>将输入的两个数字交换次序输出，<code>add</code>将输入的两个数字相加（这是wasm代码需要实现的功能函数）；以及一个导入log函数打印日志（这是host代码需要实现的功能函数，以供wasm代码进行调用）。</p><pre tabindex=0><code class=language-wit data-lang=wit>package learnwit:basic
+
+world demo {
+  // 导出swap函数,交换入参并返回。wit不限制返回值数量，目前针对wasm单返回值限制，采用的是将所有返回值写入某块内存，返回其地址
+  export swap: func(x: u32, y: u32) -&gt; (a: u32, b: u32)
+  // 导出add函数，将参数x和y相加
+  export add: func(x: u32, y: u32) -&gt; u32
+  // 导入log函数
+  import host: interface {
+    log: func(param: string)
+  }
+}
+</code></pre><p>我们创建文件<code>wit/demo.wit</code>并将以上内容写入。然后执行<code>wit-bindgen tiny-go --out-dir guest/demo wit</code>，我们就可以看到在<code>guest/demo</code>文件夹下创建了<code>demo.c demo.go demo.h demo_component_type.o</code>这几个文件。</p><h4 id=guest-code>Guest code</h4><p>接下来我们实现自己的wasm代码，在guest文件夹下创建demo.go文件并拷贝以下内容。然后执行<code>go mod init guest && go mod tidy</code>。接下来执行<code>tinygo build -o main.wasm --no-debug -target=wasi demo.go</code>就可以将其编译为wasm。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;guest/demo&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>init</span>() {
+</span></span><span style=display:flex><span>	a <span style=color:#ff79c6>:=</span> Demo{}
+</span></span><span style=display:flex><span>	demo.<span style=color:#50fa7b>SetDemo</span>(a)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> Demo <span style=color:#8be9fd;font-style:italic>struct</span> {
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (e Demo) <span style=color:#50fa7b>Add</span>(x <span style=color:#8be9fd>uint32</span>, y <span style=color:#8be9fd>uint32</span>) <span style=color:#8be9fd>uint32</span> {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> x <span style=color:#ff79c6>+</span> y
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (e Demo) <span style=color:#50fa7b>Swap</span>(x <span style=color:#8be9fd>uint32</span>, y <span style=color:#8be9fd>uint32</span>) (<span style=color:#8be9fd>uint32</span>, <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	demo.<span style=color:#50fa7b>HostLog</span>(<span style=color:#f1fa8c>&#34;wasm function Swap is called&#34;</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> y, x
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>//go:generate wit-bindgen tiny-go ../wit --out-dir=demo
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {}
+</span></span></code></pre></div><p>这个文件非常简单，我们实现了在guest/demo中定义的<code>Demo</code>接口，接口中正是我们定义的两个导出函数，<code>Add</code> 和<code>Swap</code>。整体上来说，bindgen将我们定义的wit格式的接口定义，转化为go语言sdk。我们在编写wasm代码时，只需要导入生成的sdk包，实现对应的接口就可以了。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> Demo <span style=color:#8be9fd;font-style:italic>interface</span> {
+</span></span><span style=display:flex><span>  <span style=color:#50fa7b>Swap</span>(x <span style=color:#8be9fd>uint32</span>, y <span style=color:#8be9fd>uint32</span>) (<span style=color:#8be9fd>uint32</span>, <span style=color:#8be9fd>uint32</span>) 
+</span></span><span style=display:flex><span>  <span style=color:#50fa7b>Add</span>(x <span style=color:#8be9fd>uint32</span>, y <span style=color:#8be9fd>uint32</span>) <span style=color:#8be9fd>uint32</span> 
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>另外我们可以发现，生成的sdk中存在.c文件，可以看到.go文件中是使用了cgo的。这是因为在目前的实现版本中，通过c做了一层桥接。由于对c语言支持比较早，所以在初版实现的时候是实现c语言格式的abi，然后调用go中定义的函数，go通过cgo来使用c中的结构体和一些方法，相当于在go语言外裹了一层c语言的适配。由于复用了c的部分代码，bindgen对go支持的编程复杂度会降低，但这会导致wasm二进制文件膨胀和额外的结构体转换的开销，这应该也是bindgen后续需要进行优化的地方之一。</p><h4 id=host-code>Host code</h4><p>我们已经有了wasm二进制文件了，但是如何才能让这个文件正常执行呢？别忘了wasm函数还用到了host提供的<code>Log</code>功能函数。</p><p>wit-bingen并没有提供host sdk的支持，而且不同的wasm运行时在定义导入函数时可能有不同的方式及函数签名。所以目前我们需要自己实现host的sdk。这里的sdk是指与业务逻辑无关的部分，就像guest的sdk一样，是一个胶水层。<a href=https://github.com/tetratelabs/wazero>wazero</a>是一个纯go语言的wasm运行时，接下来就以wazero为例介绍应该如何来运行此wasm程序。</p><p>我们将以下代码拷贝到<code>host/sdk.go</code>中。在这个文件中，我们实现了导入函数log。通过<code>Instantiate</code>函数可以实现此函数的“动态链接”。</p><p>通过<code>Log</code>函数我们可以看到在传递wasm没有原生支持的数据结构时，此例中为string，是通过传递其指针和在内存中占用长度来进行的。通过对wasm中内存的读取来获取传递的message。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;context&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;log&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/tetratelabs/wazero&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/tetratelabs/wazero/api&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>const</span> ModuleName = <span style=color:#f1fa8c>&#34;host&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Instantiate</span>(ctx context.Context, rt wazero.Runtime) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	_, err <span style=color:#ff79c6>:=</span> rt.<span style=color:#50fa7b>NewHostModuleBuilder</span>(ModuleName).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().<span style=color:#50fa7b>WithFunc</span>(Log).<span style=color:#50fa7b>Export</span>(<span style=color:#f1fa8c>&#34;log&#34;</span>).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>Instantiate</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Log</span>(ctx context.Context, m api.Module, ptr, length <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// read the wasm memory at ptr for length bytes
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	message, ok <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>Read</span>(ptr, length)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// handle error
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	log.<span style=color:#50fa7b>Println</span>(<span style=color:#8be9fd;font-style:italic>string</span>(message))
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>将以下内容拷贝到<code>host/main.go</code>文件中:</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// main.go
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;context&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;crypto/rand&#34;</span>
+</span></span><span style=display:flex><span>	_ <span style=color:#f1fa8c>&#34;embed&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;log&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;os&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/tetratelabs/wazero&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/tetratelabs/wazero/api&#34;</span>
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>//go:embed main.wasm
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>var</span> wasmBytes []<span style=color:#8be9fd>byte</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	ctx <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>Background</span>()
+</span></span><span style=display:flex><span>	runtime <span style=color:#ff79c6>:=</span> wazero.<span style=color:#50fa7b>NewRuntime</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> runtime.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// todo detect wasm module valid
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	wasmModule, err <span style=color:#ff79c6>:=</span> runtime.<span style=color:#50fa7b>CompileModule</span>(ctx, wasmBytes)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>handleErr</span>(err)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> wasmModule.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>	wasi_snapshot_preview1.<span style=color:#50fa7b>Instantiate</span>(ctx, runtime)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Instantiate</span>(ctx, runtime)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	ins, err <span style=color:#ff79c6>:=</span> runtime.<span style=color:#50fa7b>InstantiateModule</span>(ctx, wasmModule,
+</span></span><span style=display:flex><span>		wazero.<span style=color:#50fa7b>NewModuleConfig</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithRandSource</span>(rand.Reader).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithStdout</span>(os.Stdout).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysNanotime</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysWalltime</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysNanosleep</span>())
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>handleErr</span>(err)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>runAdd</span>(ctx, ins)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>runSwap</span>(ctx, ins)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	ins.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>runAdd</span>(ctx context.Context, m api.Module) {
+</span></span><span style=display:flex><span>	fn <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>ExportedFunction</span>(<span style=color:#f1fa8c>&#34;add&#34;</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> fn <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>panic</span>(<span style=color:#f1fa8c>&#34;function add not found&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	res, err <span style=color:#ff79c6>:=</span> fn.<span style=color:#50fa7b>Call</span>(ctx, <span style=color:#bd93f9>1</span>, <span style=color:#bd93f9>2</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>handleErr</span>(err)
+</span></span><span style=display:flex><span>	log.<span style=color:#50fa7b>Printf</span>(<span style=color:#f1fa8c>&#34;success call wasm function add(1, 2) = %d \n&#34;</span>, res[<span style=color:#bd93f9>0</span>])
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>runSwap</span>(ctx context.Context, m api.Module) {
+</span></span><span style=display:flex><span>	fn <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>ExportedFunction</span>(<span style=color:#f1fa8c>&#34;swap&#34;</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> fn <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>panic</span>(<span style=color:#f1fa8c>&#34;function swap not found&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	res, err <span style=color:#ff79c6>:=</span> fn.<span style=color:#50fa7b>Call</span>(ctx, <span style=color:#bd93f9>1</span>, <span style=color:#bd93f9>2</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>handleErr</span>(err)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// res[0] is pointer to result, 4 bytes for x, 4 bytes for y
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	x, _ <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>ReadUint32Le</span>(<span style=color:#8be9fd;font-style:italic>uint32</span>(res[<span style=color:#bd93f9>0</span>]))
+</span></span><span style=display:flex><span>	y, _ <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>ReadUint32Le</span>(<span style=color:#8be9fd;font-style:italic>uint32</span>(res[<span style=color:#bd93f9>0</span>] <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>4</span>))
+</span></span><span style=display:flex><span>	log.<span style=color:#50fa7b>Printf</span>(<span style=color:#f1fa8c>&#34;success call wasm function swap(1, 2) = %d, %d \n&#34;</span>, x, y)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleErr</span>(err <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>panic</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>上文中<code>runAdd</code>和 <code>runSwap</code>两个函数都是调用wasm中的导出函数。首先可以看到其一般流程为：通过导出函数名称获取到导出函数，然后调用其Call方法进行调用，第一个参数固定为<code>ctx</code>这是wazero的特点，它会贯穿函数整个的调用链，可以用来存一些值。然后是函数的实际调用参数，有多少传多少。</p><p>对于本例来说，首先是add函数，我们可以通过查看guest sdk的代码来确定参数数量和类型：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#50fa7b>__attribute__</span>((<span style=color:#50fa7b>__export_name__</span>(<span style=color:#f1fa8c>&#34;add&#34;</span>)))
+</span></span><span style=display:flex><span><span style=color:#8be9fd>int32_t</span> <span style=color:#50fa7b>__wasm_export_demo_add</span>(<span style=color:#8be9fd>int32_t</span> arg, <span style=color:#8be9fd>int32_t</span> arg0) {
+</span></span><span style=display:flex><span>  <span style=color:#8be9fd>uint32_t</span> ret <span style=color:#ff79c6>=</span> <span style=color:#50fa7b>demo_add</span>((<span style=color:#8be9fd>uint32_t</span>) (arg), (<span style=color:#8be9fd>uint32_t</span>) (arg0));
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>return</span> (<span style=color:#8be9fd>int32_t</span>) (ret);
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>__wasm_export_demo_add</code>接受两个参数，然后返回一个参数，返回值即为结果。对于所有单返回值且返回值类型为wasm支持的类型时，其返回值就是结果。</p><p>对于swap函数来说，其对应的代码为：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#ff79c6>static</span> <span style=color:#8be9fd>uint8_t</span> RET_AREA[<span style=color:#bd93f9>8</span>];
+</span></span><span style=display:flex><span><span style=color:#50fa7b>__attribute__</span>((<span style=color:#50fa7b>__export_name__</span>(<span style=color:#f1fa8c>&#34;swap&#34;</span>)))
+</span></span><span style=display:flex><span><span style=color:#8be9fd>int32_t</span> <span style=color:#50fa7b>__wasm_export_demo_swap</span>(<span style=color:#8be9fd>int32_t</span> arg, <span style=color:#8be9fd>int32_t</span> arg0) {
+</span></span><span style=display:flex><span>  <span style=color:#8be9fd>uint32_t</span> ret;
+</span></span><span style=display:flex><span>  <span style=color:#8be9fd>uint32_t</span> ret1;
+</span></span><span style=display:flex><span>  <span style=color:#50fa7b>demo_swap</span>((<span style=color:#8be9fd>uint32_t</span>) (arg), (<span style=color:#8be9fd>uint32_t</span>) (arg0), <span style=color:#ff79c6>&amp;</span>ret, <span style=color:#ff79c6>&amp;</span>ret1);
+</span></span><span style=display:flex><span>  <span style=color:#8be9fd>int32_t</span> ptr <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) <span style=color:#ff79c6>&amp;</span>RET_AREA;
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int32_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>0</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) (ret);
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int32_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>4</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) (ret1);
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>return</span> ptr;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p><code>__wasm_export_demo_swap</code>函数同样是两个参数，然后返回一个参数。两个参数同样就是函数参数。但是返回值是一块指向8字节数组的指针。前4个字节是返回值1，后4个字节是返回值2。这也是我们在<code>runAdd</code>和 <code>runSwap</code>函数中使用不同的方式来读取wasm函数调用返回值的原因。</p><p>最后执行<code>go mod init host && go mod tidy</code>。将guest下的wasm文件拷贝到host目录中。接下来执行<code>go run .</code>，就可以执行wasm程序了，你将看到控制台输出以下内容：</p><pre tabindex=0><code>2023/09/03 16:01:39 success call wasm function add(1, 2) = 3 
+2023/09/03 16:01:39 wasm function Swap is called
+2023/09/03 16:01:39 success call wasm function swap(1, 2) = 2, 1 
+</code></pre><p>你可以在<a href=https://github.com/Taction/wit-go-example/tree/master/basic>这里</a>找到本文所涉及到的所有代码。</p><h3 id=注与wasi区别>注：与WASI区别</h3><p>从层次上来说WASI是在组件模型之上的，组件模型提供了用于定义WASI接口的基本构建块，包括：</p><ul><li>定义可以在WASI接口中使用的类型的语法;</li><li>WASI可以假定的链接功能用于组成单独的代码模块，隔离它们的能力并虚拟化WASI接口;</li><li>当针对WASI时，核心WASM工具链可以将其编译为WASM ABI。</li></ul><p>与传统操作系统的比较，组件模型起到了定义操作系统的进程模型的角色（定义进程如何启动和相互通信），而WASI起到了定义操作系统的许多I/O接口的角色。</p><p>然而，使用WASI并不强制用户使用组件模型。任何核心wasm开发者都可以简单地使用通过组件模型定义的任意WASI接口的wasm ABI方法签名。这种方法会遇到许多已经由组件模型解决了的问题，特别是当涉及多个WASM模块时。但对于单模块场景或高度自定义的场景，这可能是合适的。</p><h3 id=参考>参考：</h3><p>[1] WebAssembly Component Model <a href=https://github.com/WebAssembly/component-model>https://github.com/WebAssembly/component-model</a></p><p>[2] Component Model High-Level Goals: <a href=https://github.com/WebAssembly/component-model/blob/main/design/high-level/Goals.md>https://github.com/WebAssembly/component-model/blob/main/design/high-level/Goals.md</a></p><p>[3] WebAssembly High-Level Goals: <a href=https://github.com/WebAssembly/design/blob/main/HighLevelGoals.md>https://github.com/WebAssembly/design/blob/main/HighLevelGoals.md</a></p><p>[4] The <code>wit</code> format: <a href=https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md>https://github.com/WebAssembly/component-model/blob/main/design/mvp/WIT.md</a></p><p>[5] Component Model Use Cases: <a href=https://github.com/WebAssembly/component-model/blob/main/design/high-level/UseCases.md>https://github.com/WebAssembly/component-model/blob/main/design/high-level/UseCases.md</a></p><p>[6] Fermyon The WebAssembly Component Model: <a href=https://www.fermyon.com/blog/webassembly-component-model>https://www.fermyon.com/blog/webassembly-component-model</a></p><hr><ul class=pager><li class=previous><a href=/2023/06/25/2023-06-25-http-wasm-middleware.md/ data-toggle=tooltip data-placement=top title="Dapr Http Wasm Middleware">&larr;
+Previous Post</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>
