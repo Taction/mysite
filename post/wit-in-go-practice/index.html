@@ -1,0 +1,487 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="Wit in Go Practice"><meta property="og:title" content="Wit in Go Practice"><meta property="twitter:title" content="Wit in Go Practice"><meta name=description content="本文以实际案例介绍如何借助WebAssembly组件模型来自定义Wasm及开发对应的go语言SDK。"><meta property="og:description" content="本文以实际案例介绍如何借助WebAssembly组件模型来自定义Wasm及开发对应的go语言SDK。"><meta property="twitter:description" content="本文以实际案例介绍如何借助WebAssembly组件模型来自定义Wasm及开发对应的go语言SDK。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>Wit in Go Practice | 张超的博客 | Taction Blog</title><link rel=canonical href=/post/wit-in-go-practice/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/bg.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/taction_about/>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/webassembly title=webassembly>webassembly</a>
+<a class=tag href=/tags/wit title=wit>wit</a></div><h1>Wit in Go Practice</h1><h2 class=subheading></h2><span class=meta>Posted by
+    "Taction"
+on
+Friday, September 1, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>TL;DR 本文以实际案例介绍如何借助WebAssembly组件模型来自定义Wasm及开发对应的go语言SDK。</p><h3 id=一-概述>一 概述</h3><p>Dapr是一个分布式运行时，那么我们能不能使用类似的abi定义，支持wasm程序能够获取dapr所支持的各种能力呢？在本文中我们将通过wit定义两个功能，网络调用http和状态存储state来探索如何实现。</p><h3 id=二-http>二 HTTP</h3><h4 id=wit定义>WIT定义</h4><p>wit/http/http.wit 导出<code>handle-http-request</code>,每当有网络请求到达时，host调用此方法将网络请求内容交由guest代码处理。这里将所有http语义信息放到了请求参数中，这是可以优化的，可以采用<code>http-wasm</code>和<code>proxy-wasm</code>所定义的方式采用guest主动获取参数方式，但是在初版实现中我会采用以下方式，更加简单一些。</p><p>导出函数是定义在wasm中的功能函数，可以供host调用。在http语义下，wasm需要导出http处理函数，接收请求数据，执行wasm业务逻辑。在接下来这个例子中我们可以看到导出函数是如何</p><pre tabindex=0><code class=language-wit data-lang=wit>package dapr:http
+
+world http {
+  export http-handler
+}
+
+interface http-handler {
+  use http-types.{request, response}
+
+  // The entrypoint for an HTTP handler.
+  handle-http-request: func(req: request) -&gt; response
+}
+</code></pre><p>wit/http/http-types.wit 这里时各种类型的详细定义。</p><pre tabindex=0><code class=language-wit data-lang=wit>package dapr:http
+
+interface http-types {
+    // The HTTP status code.
+    // This is currently an unsigned 16-bit integer,
+    // but it could be represented as an enum containing
+    // all possible HTTP status codes.
+    type http-status = u16
+
+    // The HTTP body.
+    // Currently, this is a synchonous byte array, but it should be
+    // possible to have a stream for both request and response bodies.
+    type body = list&lt;u8&gt;
+
+    // The HTTP headers represented as a list of (name, value) pairs.
+    type headers = list&lt;tuple&lt;string, string&gt;&gt;
+
+    // The HTTP parameter queries, represented as a list of (name, value) pairs.
+    type params = list&lt;tuple&lt;string, string&gt;&gt;
+
+    // The HTTP URI of the current request.
+    type uri = string
+
+    // The HTTP method.
+    enum method {
+        get,
+        post,
+        put,
+        delete,
+        patch,
+        head,
+        options,
+    }
+
+    // An HTTP request.
+    record request {
+        method: method,
+        uri: uri,
+        headers: headers,
+        params: params,
+        body: option&lt;body&gt;,
+    }
+
+    // An HTTP response.
+    record response {
+        status: http-status,
+        headers: option&lt;headers&gt;,
+        body: option&lt;body&gt;,
+    }
+}
+</code></pre><h4 id=guest>Guest</h4><p>通过命令<code>wit-bindgen tiny-go --out-dir dapr/http wit/http</code>来生成guest sdk代码。，查看生成的目录，可以发现生成的是go文件和c文件。go文件通过cgo与c代码进行交互。</p><p>然后对于guest code来说，可以直接引用生成的guest sdk，实现所需要的接口，在接口函数中实现功能逻辑：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#ff79c6>package</span> main
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>import</span> (
+</span></span><span style=display:flex><span>	<span style=color:#f1fa8c>&#34;github.com/taction/wit-dapr/dapr/http&#34;</span>
+</span></span><span style=display:flex><span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>init</span>() {
+</span></span><span style=display:flex><span>	a <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>HostImpl{}
+</span></span><span style=display:flex><span>	http.<span style=color:#50fa7b>SetExportsDaprHttpHttpHandler</span>(a)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> HostImpl <span style=color:#8be9fd;font-style:italic>struct</span> {
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (h <span style=color:#ff79c6>*</span>HostImpl) <span style=color:#50fa7b>HandleHttpRequest</span>(req http.DaprHttpHttpTypesRequest) http.DaprHttpHttpTypesResponse {
+</span></span><span style=display:flex><span>	headers <span style=color:#ff79c6>:=</span> []http.DaprHttpHttpTypesTuple2StringStringT{{<span style=color:#f1fa8c>&#34;Content-Type&#34;</span>, <span style=color:#f1fa8c>&#34;text/plain&#34;</span>}}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> http.DaprHttpHttpTypesResponse{
+</span></span><span style=display:flex><span>		Status:  <span style=color:#bd93f9>200</span>,
+</span></span><span style=display:flex><span>		Body:    http.<span style=color:#50fa7b>Some</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(<span style=color:#f1fa8c>&#34;Hello from WASM!&#34;</span>)),
+</span></span><span style=display:flex><span>		Headers: http.<span style=color:#50fa7b>Some</span>(headers),
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {}
+</span></span></code></pre></div><p>通过<code>tinygo build -o main.wasm --no-debug -target=wasi main.go</code>命令即可将其编译为wasm二进制文件。</p><h4 id=host>Host</h4><p>由于本例中没有导入函数，所以对于host来说就是需要实现一个go原生http server，当有请求的时候，将请求序列化为abi所能接受的参数格式，调用wasm对应的函数进行处理。然后解析wasm函数的处理结果，将其设置为网络请求的返回。</p><p>首先根据c代码中的函数，确定函数导出名称，以及入参出参，根据代码细节确定入参各个参数含义。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#6272a4>// 返回值大小，根据所有返回值计算出来的，铺平后所占用的空间
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#ff79c6>static</span> <span style=color:#8be9fd>uint8_t</span> RET_AREA[<span style=color:#bd93f9>28</span>];
+</span></span><span style=display:flex><span><span style=color:#50fa7b>__attribute__</span>((<span style=color:#50fa7b>__export_name__</span>(<span style=color:#f1fa8c>&#34;dapr:http/http-handler#handle-http-request&#34;</span>)))
+</span></span><span style=display:flex><span><span style=color:#8be9fd>int32_t</span> <span style=color:#50fa7b>__wasm_export_exports_dapr_http_http_handler_handle_http_request</span>(<span style=color:#8be9fd>int32_t</span> arg, <span style=color:#8be9fd>int32_t</span> arg0, <span style=color:#8be9fd>int32_t</span> arg1, <span style=color:#8be9fd>int32_t</span> arg2, <span style=color:#8be9fd>int32_t</span> arg3, <span style=color:#8be9fd>int32_t</span> arg4, <span style=color:#8be9fd>int32_t</span> arg5, <span style=color:#8be9fd>int32_t</span> arg6, <span style=color:#8be9fd>int32_t</span> arg7, <span style=color:#8be9fd>int32_t</span> arg8) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 将arg ~ arg8组装成arg9调用go中定义的函数。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#8be9fd>dapr_http_http_handler_response_t</span> ret;
+</span></span><span style=display:flex><span>  <span style=color:#50fa7b>exports_dapr_http_http_handler_handle_http_request</span>(<span style=color:#ff79c6>&amp;</span>arg9, <span style=color:#ff79c6>&amp;</span>ret);
+</span></span><span style=display:flex><span>  <span style=color:#8be9fd>int32_t</span> ptr <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) <span style=color:#ff79c6>&amp;</span>RET_AREA;
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 将返回值封装到28字节数组中，返回其指针。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#ff79c6>return</span> ptr;
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>然后在处理网络请求的函数中，为每个请求实例化一个wasm instance，获取其导出函数，并封装调用参数，调用导出函数：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>  http.<span style=color:#50fa7b>HandleFunc</span>(<span style=color:#f1fa8c>&#34;/&#34;</span>, <span style=color:#8be9fd;font-style:italic>func</span>(writer http.ResponseWriter, request <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>		err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>handler</span>(writer, request, wasmFile)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			writer.<span style=color:#50fa7b>WriteHeader</span>(<span style=color:#bd93f9>500</span>)
+</span></span><span style=display:flex><span>			writer.<span style=color:#50fa7b>Write</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(err.<span style=color:#50fa7b>Error</span>()))
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (w WasmServer) <span style=color:#50fa7b>ServeHTTP</span>(res http.ResponseWriter, req <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>	fn <span style=color:#ff79c6>:=</span> w.Module.<span style=color:#50fa7b>ExportedFunction</span>(<span style=color:#f1fa8c>&#34;dapr:http/http-handler#handle-http-request&#34;</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> fn <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>WriteHeader</span>(<span style=color:#bd93f9>500</span>)
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>Write</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(<span style=color:#f1fa8c>&#34;Handler not found&#34;</span>))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 参数准备
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	methond <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>getMethod</span>(req.Method)
+</span></span><span style=display:flex><span>	urlPtr, urlLen, headerPtr, headerLen, paramPtr, paramLen, hasBody, bodyPtr, bodyLen, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>formatRequestAsArgs</span>(w.Module, req)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 函数调用，根据guest sdk中
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	resp, err <span style=color:#ff79c6>:=</span> fn.<span style=color:#50fa7b>Call</span>(context.<span style=color:#50fa7b>TODO</span>(), <span style=color:#8be9fd;font-style:italic>uint64</span>(methond), urlPtr, urlLen, headerPtr, headerLen, paramPtr, paramLen, hasBody, bodyPtr, bodyLen)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 释放参数准备时申请的wasm中的内存，这些数据在wasm中不会再被用到了
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#50fa7b>freeHeader</span>(w.Module, headerPtr, headerLen)
+</span></span><span style=display:flex><span>	common.<span style=color:#50fa7b>Free</span>(context.<span style=color:#50fa7b>TODO</span>(), w.Module, urlPtr, headerPtr, paramPtr, bodyPtr) <span style=color:#6272a4>// free after used
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>WriteHeader</span>(<span style=color:#bd93f9>500</span>)
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>Write</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(err.<span style=color:#50fa7b>Error</span>()))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 读取并解析返回值
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	data, ok <span style=color:#ff79c6>:=</span> w.Module.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>Read</span>(<span style=color:#8be9fd;font-style:italic>uint32</span>(resp[<span style=color:#bd93f9>0</span>]), returnedResponseLen)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		fmt.<span style=color:#50fa7b>Println</span>(<span style=color:#f1fa8c>&#34;Error reading headers.&#34;</span>)
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>WriteHeader</span>(<span style=color:#bd93f9>500</span>)
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>Write</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(<span style=color:#f1fa8c>&#34;Error reading response&#34;</span>))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	response <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>decodeResponse</span>(w.Module, data)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> response <span style=color:#ff79c6>==</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>WriteHeader</span>(<span style=color:#bd93f9>500</span>)
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>Write</span>([]<span style=color:#8be9fd;font-style:italic>byte</span>(<span style=color:#f1fa8c>&#34;Error decoding response&#34;</span>))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> response.Headers <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// todo handle headers properly
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>for</span> k, v <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>range</span> <span style=color:#ff79c6>*</span>response.Headers {
+</span></span><span style=display:flex><span>			res.<span style=color:#50fa7b>Header</span>().<span style=color:#50fa7b>Set</span>(k, v[<span style=color:#bd93f9>0</span>])
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	res.<span style=color:#50fa7b>WriteHeader</span>(<span style=color:#8be9fd;font-style:italic>int</span>(response.StatusCode))
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> response.Body <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		res.<span style=color:#50fa7b>Write</span>(response.Body)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>从参数准备过程中，我们可以发现的一点就是，在传复杂结构的时候，手动申请和释放内存会比较麻烦。申请内存所存放的内容是在wasm侧会用到的信息，而且这些内容在用不到的时候是需要手动释放的。我能想到的有2种方式来解决这个问题，一个是本例中所采用的方式，host知道或者规定在某个节点这些数据不再使用，进行手动释放；另一个是增加一个释放的abi函数，wasm在用不到对应数据的时候调用对应的函数释放对应的一系列资源，如果将body改为stream流，那么采用这种方式就会更好一点。</p><h5 id=response解析>response解析</h5><p>以response解析为例来看在传递response的时候具体的逻辑,从wit定义来看它具有如下定义：</p><pre tabindex=0><code class=language-wit data-lang=wit>    // The HTTP body.
+    // Currently, this is a synchonous byte array, but it should be
+    // possible to have a stream for both request and response bodies.
+    type body = list&lt;u8&gt;
+
+    // The HTTP headers represented as a list of (name, value) pairs.
+    type headers = list&lt;tuple&lt;string, string&gt;&gt;
+    record response {
+        status: http-status,
+        headers: option&lt;headers&gt;,
+        body: option&lt;body&gt;,
+    }
+</code></pre><p>在c guest sdk中，序列化response的代码如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#ff79c6>static</span> <span style=color:#8be9fd>uint8_t</span> RET_AREA[<span style=color:#bd93f9>28</span>];
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#50fa7b>__attribute__</span>((<span style=color:#50fa7b>__export_name__</span>(<span style=color:#f1fa8c>&#34;dapr:http/http-handler#handle-http-request&#34;</span>)))
+</span></span><span style=display:flex><span><span style=color:#8be9fd>int32_t</span> <span style=color:#50fa7b>__wasm_export_exports_dapr_http_http_handler_handle_http_request</span>(<span style=color:#8be9fd>int32_t</span> arg, <span style=color:#8be9fd>int32_t</span> arg0, <span style=color:#8be9fd>int32_t</span> arg1, <span style=color:#8be9fd>int32_t</span> arg2, <span style=color:#8be9fd>int32_t</span> arg3, <span style=color:#8be9fd>int32_t</span> arg4, <span style=color:#8be9fd>int32_t</span> arg5, <span style=color:#8be9fd>int32_t</span> arg6, <span style=color:#8be9fd>int32_t</span> arg7, <span style=color:#8be9fd>int32_t</span> arg8) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ....
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#8be9fd>int32_t</span> ptr <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) <span style=color:#ff79c6>&amp;</span>RET_AREA;
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int16_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>0</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) ((ret).status);
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>if</span> (((ret).headers).is_some) {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>const</span> <span style=color:#8be9fd>dapr_http_http_types_headers_t</span> <span style=color:#ff79c6>*</span>payload10 <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>&amp;</span>((ret).headers).val;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int8_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>4</span>)) <span style=color:#ff79c6>=</span> <span style=color:#bd93f9>1</span>;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int32_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>12</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) (<span style=color:#ff79c6>*</span>payload10).len;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int32_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>8</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) (<span style=color:#ff79c6>*</span>payload10).ptr;
+</span></span><span style=display:flex><span>  } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int8_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>4</span>)) <span style=color:#ff79c6>=</span> <span style=color:#bd93f9>0</span>;
+</span></span><span style=display:flex><span>  }
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>if</span> (((ret).body).is_some) {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>const</span> <span style=color:#8be9fd>dapr_http_http_types_body_t</span> <span style=color:#ff79c6>*</span>payload12 <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>&amp;</span>((ret).body).val;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int8_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>16</span>)) <span style=color:#ff79c6>=</span> <span style=color:#bd93f9>1</span>;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int32_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>24</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) (<span style=color:#ff79c6>*</span>payload12).len;
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int32_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>20</span>)) <span style=color:#ff79c6>=</span> (<span style=color:#8be9fd>int32_t</span>) (<span style=color:#ff79c6>*</span>payload12).ptr;
+</span></span><span style=display:flex><span>  } <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>*</span>((<span style=color:#8be9fd>int8_t</span><span style=color:#ff79c6>*</span>)(ptr <span style=color:#ff79c6>+</span> <span style=color:#bd93f9>16</span>)) <span style=color:#ff79c6>=</span> <span style=color:#bd93f9>0</span>;
+</span></span><span style=display:flex><span>  }
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>return</span> ptr;
+</span></span></code></pre></div><p>从中可以看到，response一共占用了28字节，所有的元素及其内存分布如下：</p><table><thead><tr><th>offset</th><th>actual bytes used</th><th>type</th><th>name</th></tr></thead><tbody><tr><td>0</td><td>4</td><td>int16</td><td>status</td></tr><tr><td>4</td><td>4</td><td>int8</td><td>headers.is_some</td></tr><tr><td>8</td><td>4</td><td>int32</td><td>headers.ptr</td></tr><tr><td>12</td><td>4</td><td>int32</td><td>headers.len</td></tr><tr><td>16</td><td>4</td><td>int8</td><td>body.is_some</td></tr><tr><td>20</td><td>4</td><td>int32</td><td>body.ptr</td></tr><tr><td>24</td><td>4</td><td>int32</td><td>body.len</td></tr></tbody></table><p>从中我们可以看到任意元素无论其本身定义的时候类型是什么，在内存占用上都是4字节，这应该是代码生成bindgen工具的特性，可能是在展开response时将每个都作为一个独立元素处理的结果。</p><p>所以对应的go语言解析代码为：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (w WasmServer) <span style=color:#50fa7b>ServeHTTP</span>(res http.ResponseWriter, req <span style=color:#ff79c6>*</span>http.Request) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 读取序列化后的response内容并解析
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  data, ok <span style=color:#ff79c6>:=</span> w.Module.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>Read</span>(<span style=color:#8be9fd;font-style:italic>uint32</span>(resp[<span style=color:#bd93f9>0</span>]), returnedResponseLen)<span style=color:#6272a4>// returnedResponseLen=28
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	response <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>decodeResponse</span>(w.Module, data)
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// 解析Response
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>decodeResponse</span>(m api.Module, res []<span style=color:#8be9fd>byte</span>) <span style=color:#ff79c6>*</span>Response {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(res) <span style=color:#ff79c6>!=</span> returnedResponseLen {
+</span></span><span style=display:flex><span>		fmt.<span style=color:#50fa7b>Printf</span>(<span style=color:#f1fa8c>&#34;Error response length %d, expected %v\n&#34;</span>, <span style=color:#8be9fd;font-style:italic>len</span>(res), returnedResponseLen)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>Response{
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// [0-4) 字节是StatusCode
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		StatusCode: <span style=color:#8be9fd;font-style:italic>uint16</span>(binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(res[<span style=color:#bd93f9>0</span>:<span style=color:#bd93f9>4</span>])),
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// [4-16) 字节是header
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		Headers:    <span style=color:#50fa7b>decodeHeaders</span>(m, res[<span style=color:#bd93f9>4</span>:<span style=color:#bd93f9>16</span>]),
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// [16-28) 字节是body
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		Body:       <span style=color:#50fa7b>decodeBody</span>(m, res[<span style=color:#bd93f9>16</span>:]),
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// 解析body：0-4是是否存在，4-8是指针，8-14是数据长度
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>decodeBody</span>(mod api.Module, h []<span style=color:#8be9fd>byte</span>) []<span style=color:#8be9fd>byte</span> {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 由于wasm采用小端存储，body是否有值只可能是0或者1，虽然使用前4个字节存储，因此只需要读第一字节就可以。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// uint8(h[0]) == uint8(binary.LittleEndian.Uint32(h[:4]))
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> h[<span style=color:#bd93f9>0</span>] <span style=color:#ff79c6>==</span> <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// nil
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	ptr <span style=color:#ff79c6>:=</span> binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(h[<span style=color:#bd93f9>4</span>:<span style=color:#bd93f9>8</span>])
+</span></span><span style=display:flex><span>	len <span style=color:#ff79c6>:=</span> binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(h[<span style=color:#bd93f9>8</span>:<span style=color:#bd93f9>12</span>])
+</span></span><span style=display:flex><span>	data, ok <span style=color:#ff79c6>:=</span> mod.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>Read</span>(ptr, len)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		fmt.<span style=color:#50fa7b>Println</span>(<span style=color:#f1fa8c>&#34;Error reading header data&#34;</span>)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> data
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h3 id=三-state>三 State</h3><p>在state组件中，主要涉及是导入函数，wasm需要借助host函数来对存储数据进行增删改查。定义get、set、delete三个函数。</p><h4 id=wit定义-1>WIT定义</h4><p>wit/state/state.wit</p><pre tabindex=0><code class=language-wit data-lang=wit>package dapr:state
+
+world state {
+  import state-interface
+}
+
+interface state-interface {
+  use state-types.{store-name,get-request,get-response,set-request,delete-request,error}
+
+  get: func(name: store-name, req: get-request) -&gt; result&lt;get-response,error&gt;
+  set: func(name: store-name, req: set-request) -&gt; result&lt;u32,error&gt;
+  delete: func(name: store-name, req: delete-request) -&gt; result&lt;u32,error&gt;
+}
+</code></pre><p>wit/state/state-types.wit</p><pre tabindex=0><code class=language-wit data-lang=wit>package dapr:state
+
+interface state-types {
+  type error = string
+
+  type store-name = string
+  type key = string
+  type metadata = list&lt;tuple&lt;string, string&gt;&gt;
+//   type consistency = string // &#34;eventual&#34; | &#34;strong&#34;
+  enum consistency {
+    unspecified,
+    eventual,
+    strong,
+  }
+  record get-state-options {
+    consistency: consistency,
+  }
+  record get-request {
+    key: key,
+    metadata: option&lt;metadata&gt;,
+    options: get-state-options,
+  }
+
+  type data =list&lt;u8&gt;
+  type etag = option&lt;string&gt;
+  type content-type = option&lt;string&gt;
+  record get-response {
+    data: data,
+    etag: etag,
+    metadata: option&lt;metadata&gt;,
+    content-type: content-type,
+  }
+
+  enum concurrency {
+    unspecified,
+    first-write,
+    last-write,
+  }
+  record set-state-options {
+    concurrency: concurrency, // &#34;first-write&#34; | &#34;last-write&#34;
+    consistency: consistency,
+  }
+  record set-request {
+    key: key,
+    value: data,
+    etag: etag,
+    metadata: option&lt;metadata&gt;,
+    options: set-state-options,
+    content-type: content-type,
+  }
+
+  record delete-request {
+    key: key,
+    etag: etag,
+    metadata: option&lt;metadata&gt;,
+    options: set-state-options,
+  }
+}
+</code></pre><h4 id=guest-1>Guest</h4><h5 id=wit-bindgen>wit bindgen</h5><p>可以通过wit-bindgen来生成guest的sdk。<code>wit-bindgen tiny-go --out-dir dapr/state wit/state</code>。</p><p>类似的，对于guest code来说，可以直接引用生成的guest sdk，直接调用sdk中定义的函数来达成对host function的访问。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	state.<span style=color:#50fa7b>DaprStateStateInterfaceSet</span>(<span style=color:#f1fa8c>&#34;state&#34;</span>, state.DaprStateStateTypesSetRequest{Key: <span style=color:#f1fa8c>&#34;z&#34;</span>, Value: []<span style=color:#8be9fd;font-style:italic>byte</span>(<span style=color:#f1fa8c>&#34;value&#34;</span>)})
+</span></span><span style=display:flex><span>	res <span style=color:#ff79c6>:=</span> state.<span style=color:#50fa7b>DaprStateStateInterfaceGet</span>(<span style=color:#f1fa8c>&#34;state&#34;</span>, state.DaprStateStateTypesGetRequest{Key: <span style=color:#f1fa8c>&#34;z&#34;</span>})
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> res.<span style=color:#50fa7b>IsOk</span>() {
+</span></span><span style=display:flex><span>		fmt.<span style=color:#50fa7b>Println</span>(<span style=color:#8be9fd;font-style:italic>string</span>(res.Val.Data))
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		fmt.<span style=color:#50fa7b>Println</span>(res.Err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>通过<code>tinygo build -o main.wasm --no-debug -target=wasi main.go</code>命令即可将其编译为wasm二进制文件。这次我们更进一步的，通过<code>wasm2wat main.wasm -o main.wat</code>命令可以将其转化为text format，更容易阅读。</p><p>我们可以看到导入了两个在<code>dapr:state/state-interface</code>命名空间下的host func，分别是get和set。其函数类型分别是0和20，在最上面可以分别看到其函数签名。</p><pre tabindex=0><code class=language-wit data-lang=wit>(module
+  (type (;0;) (func (param i32 i32)))
+  (type (;20;) (func (param i32 i32 i32 i32 i32 i32 i32 i32 i32)))
+  ;; ...
+  
+  (import &#34;dapr:state/state-interface&#34; &#34;get&#34; (func $__wasm_import_dapr_state_state_interface_get (type 20)))
+  (import &#34;dapr:state/state-interface&#34; &#34;set&#34; (func $__wasm_import_dapr_state_state_interface_set (type 0)))
+  
+  ;; ...
+  (table (;0;) 4 4 funcref)
+  (memory (;0;) 2)
+  (global $__stack_pointer (mut i32) (i32.const 65536))
+  (global (;1;) (mut i32) (i32.const 0))
+  (global (;2;) (mut i32) (i32.const 0))
+  (export &#34;memory&#34; (memory 0))
+  (export &#34;malloc&#34; (func $malloc))
+  (export &#34;free&#34; (func $free))
+  (export &#34;calloc&#34; (func $calloc))
+  (export &#34;realloc&#34; (func $realloc))
+  (export &#34;_start&#34; (func $_start))
+  (export &#34;cabi_realloc&#34; (func $cabi_realloc))
+</code></pre><p>通过查看c sdk代码中函数的定义，可以看到函数签名的符合的，get函数具有9个int32参数，set函数具有2个int32参数。参数代表的具体含义同样可以进一步观察c sdk代码获得。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-c data-lang=c><span style=display:flex><span><span style=color:#50fa7b>__attribute__</span>((<span style=color:#50fa7b>__import_module__</span>(<span style=color:#f1fa8c>&#34;dapr:state/state-interface&#34;</span>), <span style=color:#50fa7b>__import_name__</span>(<span style=color:#f1fa8c>&#34;get&#34;</span>)))
+</span></span><span style=display:flex><span><span style=color:#8be9fd>void</span> <span style=color:#50fa7b>__wasm_import_dapr_state_state_interface_get</span>(<span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>);
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#50fa7b>__attribute__</span>((<span style=color:#50fa7b>__import_module__</span>(<span style=color:#f1fa8c>&#34;dapr:state/state-interface&#34;</span>), <span style=color:#50fa7b>__import_name__</span>(<span style=color:#f1fa8c>&#34;set&#34;</span>)))
+</span></span><span style=display:flex><span><span style=color:#8be9fd>void</span> <span style=color:#50fa7b>__wasm_import_dapr_state_state_interface_set</span>(<span style=color:#8be9fd>int32_t</span>, <span style=color:#8be9fd>int32_t</span>);
+</span></span></code></pre></div><h4 id=host-1>Host</h4><p>对于host sdk来说，需要实现对应的3个导入函数：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>const</span> ModuleName = <span style=color:#f1fa8c>&#34;dapr:state/state-interface&#34;</span>
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>Instantiate</span>(ctx context.Context, rt wazero.Runtime) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	s <span style=color:#ff79c6>:=</span> State
+</span></span><span style=display:flex><span>	_, err <span style=color:#ff79c6>:=</span> rt.<span style=color:#50fa7b>NewHostModuleBuilder</span>(ModuleName).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().<span style=color:#50fa7b>WithFunc</span>(s.Get).<span style=color:#50fa7b>Export</span>(<span style=color:#f1fa8c>&#34;get&#34;</span>).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().<span style=color:#50fa7b>WithFunc</span>(s.Set).<span style=color:#50fa7b>Export</span>(<span style=color:#f1fa8c>&#34;set&#34;</span>).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>NewFunctionBuilder</span>().<span style=color:#50fa7b>WithFunc</span>(s.Delete).<span style=color:#50fa7b>Export</span>(<span style=color:#f1fa8c>&#34;delete&#34;</span>).
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>Instantiate</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>以set函数为例，它具有两个参数，一个是方法调用所有参数的指针，另一个是方法调用完成后返回值可以写入的指针，其长度可以查看guest sdk获得。在此方法中，首先根据入参指针解析组件名称和set请求，然后根据名称获取对应的组件，调用组件的set方法，将结果写回到返回值指针中。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (h <span style=color:#ff79c6>*</span>HostImpl) <span style=color:#50fa7b>Set</span>(ctx context.Context, m api.Module, inPtr, outPtr <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// read request
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	name, req, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>readSetRequest</span>(ctx, m, inPtr)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// call state store
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	c, ok <span style=color:#ff79c6>:=</span> h.<span style=color:#50fa7b>getComponent</span>(ctx, <span style=color:#8be9fd;font-style:italic>string</span>(name))
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>handleGetError</span>(ctx, m, outPtr, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;get component failed&#34;</span>))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	err = c.<span style=color:#50fa7b>Set</span>(ctx, req)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>handleSetError</span>(ctx, m, outPtr, err)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span>
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// handle response
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#50fa7b>handleSetResponseOk</span>(ctx, m, outPtr)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>读取请求</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>readSetRequest</span>(ctx context.Context, m api.Module, ptr <span style=color:#8be9fd>uint32</span>) (<span style=color:#8be9fd>string</span>, <span style=color:#ff79c6>*</span>comstate.SetRequest, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	data, ok <span style=color:#ff79c6>:=</span> common.<span style=color:#50fa7b>ReadBytes</span>(m, ptr, SetLen)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#f1fa8c>&#34;&#34;</span>, <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;read request failed&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// read name
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	namePtr, nameLen <span style=color:#ff79c6>:=</span> binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(data[<span style=color:#bd93f9>0</span>:<span style=color:#bd93f9>4</span>]), binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(data[<span style=color:#bd93f9>4</span>:<span style=color:#bd93f9>8</span>])
+</span></span><span style=display:flex><span>	name, ok <span style=color:#ff79c6>:=</span> common.<span style=color:#50fa7b>ReadString</span>(m, namePtr, nameLen)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#f1fa8c>&#34;&#34;</span>, <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;read name failed&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	keyPtr, keyLen <span style=color:#ff79c6>:=</span> binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(data[<span style=color:#bd93f9>8</span>:<span style=color:#bd93f9>12</span>]), binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(data[<span style=color:#bd93f9>12</span>:<span style=color:#bd93f9>16</span>])
+</span></span><span style=display:flex><span>	key, ok <span style=color:#ff79c6>:=</span> common.<span style=color:#50fa7b>ReadString</span>(m, keyPtr, keyLen)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> !ok {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#f1fa8c>&#34;&#34;</span>, <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;read key failed&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	valuePtr, valueLen <span style=color:#ff79c6>:=</span> binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(data[<span style=color:#bd93f9>16</span>:<span style=color:#bd93f9>20</span>]), binary.LittleEndian.<span style=color:#50fa7b>Uint32</span>(data[<span style=color:#bd93f9>20</span>:<span style=color:#bd93f9>24</span>])
+</span></span><span style=display:flex><span>	value, ok <span style=color:#ff79c6>:=</span> common.<span style=color:#50fa7b>ReadBytes</span>(m, valuePtr, valueLen)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// todo handle etag and metadata
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>return</span> name, <span style=color:#ff79c6>&amp;</span>comstate.SetRequest{
+</span></span><span style=display:flex><span>		Key:   <span style=color:#8be9fd;font-style:italic>string</span>(key),
+</span></span><span style=display:flex><span>		Value: value,
+</span></span><span style=display:flex><span>	}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>处理成功的请求,将请求结果序列化，并写入给定的指针。指针指向的区域肯定够大，因为在生成代码的时候计算过返回值“大小”。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>handleSetResponseOk</span>(ctx context.Context, m api.Module, ptr <span style=color:#8be9fd>uint32</span>) {
+</span></span><span style=display:flex><span>	resbytes <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>([]<span style=color:#8be9fd>byte</span>, SetLen)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>//binary.LittleEndian.PutUint32(resbytes[0:4], 0) // result&lt;ok&gt; is 0, so do not need to write
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	binary.LittleEndian.<span style=color:#50fa7b>PutUint32</span>(resbytes[<span style=color:#bd93f9>4</span>:<span style=color:#bd93f9>8</span>], <span style=color:#bd93f9>1</span>) <span style=color:#6272a4>// write 1 to indicate ok
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	m.<span style=color:#50fa7b>Memory</span>().<span style=color:#50fa7b>Write</span>(ptr, resbytes)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>忽略组件的注册过程，host运行wasm的代码如下,其中最主要的就是<code>host_state.Instantiate(ctx, runtime)</code>导入定义的state host function：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>run</span>(wasmFile <span style=color:#8be9fd>string</span>) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	wasmName <span style=color:#ff79c6>:=</span> filepath.<span style=color:#50fa7b>Base</span>(wasmFile)
+</span></span><span style=display:flex><span>	wasmCode, err <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>ReadFile</span>(wasmFile)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;could not read WASM file &#39;%s&#39;: %w&#34;</span>, wasmFile, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	ctx <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>Background</span>()
+</span></span><span style=display:flex><span>	runtime <span style=color:#ff79c6>:=</span> wazero.<span style=color:#50fa7b>NewRuntime</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> runtime.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// todo detect wasm module valid
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	wasmModule, err <span style=color:#ff79c6>:=</span> runtime.<span style=color:#50fa7b>CompileModule</span>(ctx, wasmCode)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> wasmModule.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>	wasi_snapshot_preview1.<span style=color:#50fa7b>Instantiate</span>(ctx, runtime)
+</span></span><span style=display:flex><span>	host_state.<span style=color:#50fa7b>Instantiate</span>(ctx, runtime)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	ins, err <span style=color:#ff79c6>:=</span> runtime.<span style=color:#50fa7b>InstantiateModule</span>(ctx, wasmModule,
+</span></span><span style=display:flex><span>		wazero.<span style=color:#50fa7b>NewModuleConfig</span>().<span style=color:#50fa7b>WithName</span>(wasmName).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithRandSource</span>(rand.Reader).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithStdout</span>(os.Stdout).
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysNanotime</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysWalltime</span>().
+</span></span><span style=display:flex><span>			<span style=color:#50fa7b>WithSysNanosleep</span>())
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	ins.<span style=color:#50fa7b>Close</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><h5 id=函数参数格式进一步说明>函数参数格式进一步说明</h5><p>细心的同学会发现wit-bindgen会倾向于把把函数返回值“聚合”，把函数参数“铺平”。但是可以看到在state函数中set和get函数的参数数量差别很大，set函数参数是聚合的结构体（或者说是序列化后的指针），而get参数是正常每个参数都单独占用一个参数位置。由于这个会影响到调用方法时参数应该以何种方式传递，所以我追查了一下源码，为什么会产生这个“特例”。在生成导入和导出函数的时候，第一步都是调用计算函数签名方法<code>wasm_signature</code>.在这个函数中，第一步就是将所有参数展开成wasm本身支持的数据结构能表达的格式；然后判断是否超过<code>MAX_FLAT_PARAMS</code>（16）阈值，如果超过了，那么参数列表就太长了，就给它聚合成一个。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-rust data-lang=rust><span style=display:flex><span><span style=color:#6272a4>// import 和 export 函数，都会先计算函数签名
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>import</span>(<span style=color:#ff79c6>&amp;</span><span style=color:#ff79c6>mut</span> self, interface_name: <span style=color:#8be9fd;font-style:italic>Option</span><span style=color:#ff79c6>&lt;&amp;</span>WorldKey<span style=color:#ff79c6>&gt;</span>, func: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>Function</span>) {
+</span></span><span style=display:flex><span>        self.docs(<span style=color:#ff79c6>&amp;</span>func.docs, SourceType::HFns);
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> sig <span style=color:#ff79c6>=</span> self.resolve.wasm_signature(AbiVariant::GuestImport, func);
+</span></span><span style=display:flex><span>				<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>export</span>(<span style=color:#ff79c6>&amp;</span><span style=color:#ff79c6>mut</span> self, func: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>Function</span>, interface_name: <span style=color:#8be9fd;font-style:italic>Option</span><span style=color:#ff79c6>&lt;&amp;</span>WorldKey<span style=color:#ff79c6>&gt;</span>) {
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> sig <span style=color:#ff79c6>=</span> self.resolve.wasm_signature(AbiVariant::GuestExport, func);
+</span></span><span style=display:flex><span>  			<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#ff79c6>pub</span> <span style=color:#ff79c6>fn</span> <span style=color:#50fa7b>wasm_signature</span>(<span style=color:#ff79c6>&amp;</span>self, variant: <span style=color:#50fa7b>AbiVariant</span>, func: <span style=color:#ff79c6>&amp;</span><span style=color:#50fa7b>Function</span>) -&gt; <span style=color:#50fa7b>WasmSignature</span> {
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>const</span> MAX_FLAT_PARAMS: <span style=color:#8be9fd>usize</span> <span style=color:#ff79c6>=</span> <span style=color:#bd93f9>16</span>;
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>const</span> MAX_FLAT_RESULTS: <span style=color:#8be9fd>usize</span> <span style=color:#ff79c6>=</span> <span style=color:#bd93f9>1</span>;
+</span></span><span style=display:flex><span>  
+</span></span><span style=display:flex><span>				<span style=color:#6272a4>// 会将参数展开，将一个参数展开成为多个wasm支持的参数（i32，i64，f32，f46）
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> params <span style=color:#ff79c6>=</span> <span style=color:#8be9fd;font-style:italic>Vec</span>::new();
+</span></span><span style=display:flex><span>        <span style=color:#8be9fd;font-style:italic>let</span> <span style=color:#ff79c6>mut</span> indirect_params <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>false</span>;
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>for</span> (_, param) <span style=color:#ff79c6>in</span> func.params.iter() {
+</span></span><span style=display:flex><span>            self.push_flat(param, <span style=color:#ff79c6>&amp;</span><span style=color:#ff79c6>mut</span> params);
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>        <span style=color:#6272a4>// 如果参数展开后超过了MAX_FLAT_PARAMS（16），就会将其压缩为一个参数
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>        <span style=color:#ff79c6>if</span> params.len() <span style=color:#ff79c6>&gt;</span> MAX_FLAT_PARAMS {
+</span></span><span style=display:flex><span>            params.truncate(<span style=color:#bd93f9>0</span>);
+</span></span><span style=display:flex><span>            params.push(WasmType::I32);
+</span></span><span style=display:flex><span>            indirect_params <span style=color:#ff79c6>=</span> <span style=color:#ff79c6>true</span>;
+</span></span><span style=display:flex><span>        }
+</span></span><span style=display:flex><span>  			<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>}
+</span></span></code></pre></div><p>你可以在这里看到所有的源码： <a href=https://github.com/Taction/wit-dapr>https://github.com/Taction/wit-dapr</a></p><hr><ul class=pager><li class=previous><a href=/post/wit-in-go/ data-toggle=tooltip data-placement=top title="WebAssembly Component Model介绍及如何与go语言结合">&larr;
+Previous Post</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a>
+<a href=/tags/wit title=wit>wit</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>
