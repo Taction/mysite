@@ -1,0 +1,80 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="在K8s中运行Wasm container"><meta property="og:title" content="在K8s中运行Wasm container"><meta property="twitter:title" content="在K8s中运行Wasm container"><meta name=description content="在K8s中运行Wasm container"><meta property="og:description" content="在K8s中运行Wasm container"><meta property="twitter:description" content="在K8s中运行Wasm container"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>在K8s中运行Wasm container | 张超的博客 | Taction Blog</title><link rel=canonical href=/post/run-wasm-in-k8s/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/bg.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/taction_about/>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/webassembly title=WebAssembly>WebAssembly</a>
+<a class=tag href=/tags/dapr title=dapr>dapr</a>
+<a class=tag href=/tags/containerd-shim title=containerd-shim>containerd-shim</a>
+<a class=tag href=/tags/k8s title=k8s>k8s</a></div><h1>在K8s中运行Wasm container</h1><h2 class=subheading></h2><span class=meta>Posted by
+    "Taction"
+on
+Sunday, September 3, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><h4 id=先决条件>先决条件</h4><h5 id=intall-k3d>Intall k3d</h5><p><code>wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash</code></p><h5 id=kubectl>kubectl</h5><pre tabindex=0><code> curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+  chmod +x ./kubectl
+  sudo mv ./kubectl /usr/local/bin/kubectl
+</code></pre><h3 id=启动k3d>启动k3d</h3><p>在这个镜像中我内置添加了<code>containerd-shim-dapr-v1</code>二进制，及为containerd添加了containerd-shim的配置。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>k3d cluster create wasm-cluster --image docker.io/docker4zc/k3swithshims:latest -p <span style=color:#f1fa8c>&#34;8081:8080@loadbalancer&#34;</span> --agents <span style=color:#bd93f9>1</span>
+</span></span></code></pre></div><p>让我们为节点增加标签，因为我们测试yaml中指定了runtimeClass的selector。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>kubectl label nodes k3d-wasm-cluster-server-0 spin-enabled<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>true</span>
+</span></span></code></pre></div><p>执行以下指令，这会添加dapr wasm runtime class以及部署一个wasm container</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>kubectl apply -f https://github.com/Taction/containerd-shim-wasm/tree/main/k3d/workloads/runtime.yaml
+</span></span><span style=display:flex><span>kubectl apply -f https://github.com/Taction/containerd-shim-wasm/tree/main/k3d/workloads/workload.yaml
+</span></span></code></pre></div><p>runtime.yaml</p><pre tabindex=0><code>apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: dapr
+handler: dapr
+scheduling:
+  nodeSelector:
+    dapr-enabled: &#34;true&#34;
+</code></pre><p>workload.yaml</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-yaml data-lang=yaml><span style=display:flex><span><span style=color:#ff79c6>apiVersion</span>: apps/v1
+</span></span><span style=display:flex><span><span style=color:#ff79c6>kind</span>: Deployment
+</span></span><span style=display:flex><span><span style=color:#ff79c6>metadata</span>:
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>name</span>: wasm-dapr
+</span></span><span style=display:flex><span><span style=color:#ff79c6>spec</span>:
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>replicas</span>: <span style=color:#bd93f9>1</span>
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>selector</span>:
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>matchLabels</span>:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>app</span>: wasm-dapr
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>template</span>:
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>metadata</span>:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>labels</span>:
+</span></span><span style=display:flex><span>        <span style=color:#ff79c6>app</span>: wasm-dapr
+</span></span><span style=display:flex><span>    <span style=color:#ff79c6>spec</span>:
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>runtimeClassName</span>: dapr
+</span></span><span style=display:flex><span>      <span style=color:#ff79c6>containers</span>:
+</span></span><span style=display:flex><span>        - <span style=color:#ff79c6>name</span>: dapr-hello
+</span></span><span style=display:flex><span>          <span style=color:#ff79c6>imagePullPolicy</span>: IfNotPresent
+</span></span><span style=display:flex><span>          <span style=color:#ff79c6>image</span>: docker.io/docker4zc/dwhttp:v0.0.3
+</span></span><span style=display:flex><span>          <span style=color:#ff79c6>command</span>: [<span style=color:#f1fa8c>&#34;/&#34;</span>]
+</span></span><span style=display:flex><span>          <span style=color:#ff79c6>resources</span>: <span style=color:#6272a4># limit the resources to 128Mi of memory and 100m of CPU</span>
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>limits</span>:
+</span></span><span style=display:flex><span>              <span style=color:#ff79c6>cpu</span>: 100m
+</span></span><span style=display:flex><span>              <span style=color:#ff79c6>memory</span>: 128Mi
+</span></span><span style=display:flex><span>            <span style=color:#ff79c6>requests</span>:
+</span></span><span style=display:flex><span>              <span style=color:#ff79c6>cpu</span>: 100m
+</span></span><span style=display:flex><span>              <span style=color:#ff79c6>memory</span>: 128Mi
+</span></span><span style=display:flex><span><span style=color:#6272a4># ...</span>
+</span></span></code></pre></div><p>然后执行以下命令向wasm container发送请求。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>curl -v http://127.0.0.1:8081/dapr/hello
+</span></span></code></pre></div><p>你应该能够看到网络请求返回<code>Hello from WASM!</code>。</p><p>另外如果你想转发更多的端口出来的话，可以通过类似以下命令对k3d的node进行修改。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>k3d node edit k3d-wasm-cluster-serverlb --port-add 8082:80
+</span></span></code></pre></div><p>了解更多可以查看：</p><p><a href=https://github.com/Taction/containerd-shim-wasm/tree/main/k3d/REEADME.md>https://github.com/Taction/containerd-shim-wasm/tree/main/k3d/REEADME.md</a></p><p><a href=https://github.com/Taction/containerd-shim-wasm>https://github.com/Taction/containerd-shim-wasm</a></p><hr><ul class=pager><li class=previous><a href=/post/wit-in-go-practice/ data-toggle=tooltip data-placement=top title="Wit in Go Practice">&larr;
+Previous Post</a></li><li class=next><a href=/post/run-dapr-wasm-in-k8s/ data-toggle=tooltip data-placement=top title="在K8s中调度Dapr Wasm程序">Next
+Post &rarr;</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/k8s title=k8s>k8s</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a>
+<a href=/tags/wit title=wit>wit</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>
