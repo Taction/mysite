@@ -15,17 +15,109 @@
 on
 Monday, September 4, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
 col-md-10 col-md-offset-1
-post-container"><p>用go语言实现一个containerd-shim，支持在k8s中调度wasm程序。通过为shim添加dapr 组件的host abi支持，使被调度的wasm程序可以获得访问dapr组件的能力。</p><p>步骤</p><p>搞一个demo wasm，部署起来看日志。</p><h4 id=添加containerd-shim>添加containerd-shim</h4><p>拷贝<code>containerd-shim-dapr-v1</code>到<code>/usr/local/bin/</code>目录下</p><p>在/etc/containerd/config.toml中添加以下内容,并重启containerd：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-toml data-lang=toml><span style=display:flex><span>[plugins.cri.containerd.runtimes.dapr]
+post-container"><p>用go语言实现一个containerd-shim，支持在k8s中调度wasm程序。通过为shim添加dapr 组件的host abi支持，使被调度的wasm程序可以获得访问dapr组件的能力。</p><h3 id=代码开发>代码开发</h3><p>在项目<a href=https://github.com/Taction/wit-dapr>wit-dapr</a>中我们实现了dapr wasm abi的go SDK，使wasm程序能够自由使用dapr提供的各种组件能力。在此项目中我们借助于此sdk以及containerd的sdk，实现一个go的containerd shim，来调度dapr style wasm程序的运行。</p><p>在后文中的代码分析中我们可以看到，运行一个容器，首先会执行Create，然后会执行Start。在这里Create主要是一些准备工作，不涉及wasm程序的启动，我们主要来看下shim的Start流程，其主要代码如下：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (p <span style=color:#ff79c6>*</span>process) <span style=color:#50fa7b>Start</span>(context.Context) (err <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 读取wasm镜像中的的wasm配置信息，其中包含了wasm程序所需要的dapr组件类型，包括http、state等
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	c, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>LoadConfigFromFile</span>(filepath.<span style=color:#50fa7b>Join</span>(p.rootfs, <span style=color:#f1fa8c>&#34;config.yaml&#34;</span>))
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> errors.<span style=color:#50fa7b>Wrapf</span>(err, <span style=color:#f1fa8c>&#34;unable to read config file&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// runtime是对一个wasm程序运行时的封装
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	rt <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>NewRuntime</span>(p.rootfs, c, moduleConfig)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 运行
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> rt.<span style=color:#50fa7b>Run</span>(); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		p.mu.<span style=color:#50fa7b>Unlock</span>()
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	p.process = rt
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>运行wasm程序代码</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>Runtime) <span style=color:#50fa7b>Run</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 根据配置进行wasm的加载，以及根据使用的组件进行导入Host函数
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> rt.<span style=color:#50fa7b>initFromConfig</span>(); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 根据使用的组件不同，http会启动一个server转发请求，其他组件会直接执行wasm程序
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	err <span style=color:#ff79c6>:=</span> rt.<span style=color:#50fa7b>run</span>()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>解析配置加载wasm以及进行host 函数导入</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>Runtime) <span style=color:#50fa7b>initFromConfig</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 读取并加载wasm二进制文件
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	wasmFile <span style=color:#ff79c6>:=</span> rt.config.WASMPath
+</span></span><span style=display:flex><span>	wasmName <span style=color:#ff79c6>:=</span> filepath.<span style=color:#50fa7b>Base</span>(wasmFile)
+</span></span><span style=display:flex><span>	wasmCode, err <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>ReadFile</span>(filepath.<span style=color:#50fa7b>Join</span>(rt.rootfs, wasmFile))
+</span></span><span style=display:flex><span>	ctx <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>Background</span>()
+</span></span><span style=display:flex><span>	runtime <span style=color:#ff79c6>:=</span> wazero.<span style=color:#50fa7b>NewRuntime</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// todo detect wasm module valid
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	wasmModule, err <span style=color:#ff79c6>:=</span> runtime.<span style=color:#50fa7b>CompileModule</span>(ctx, wasmCode)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 链接导入函数（Host提供的函数）
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	wasi_snapshot_preview1.<span style=color:#50fa7b>Instantiate</span>(ctx, runtime)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> rt.config.Trigger <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;state&#34;</span> {
+</span></span><span style=display:flex><span>		host_state.<span style=color:#50fa7b>Instantiate</span>(ctx, runtime)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>根据组件类型（Trigger）的不同来执行不同的逻辑，其中http、input binding、pubsub的订阅（后两者还未支持）会等待事件触发再执行wasm程序；其他的会直接执行wasm程序。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>Runtime) <span style=color:#50fa7b>run</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> rt.config.Trigger <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;http&#34;</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> rt.<span style=color:#50fa7b>runServer</span>()
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> rt.<span style=color:#50fa7b>runExecWasm</span>()
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>Runtime) <span style=color:#50fa7b>runServer</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	errch <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>make</span>(<span style=color:#8be9fd;font-style:italic>chan</span> <span style=color:#8be9fd>error</span>, <span style=color:#bd93f9>1</span>)
+</span></span><span style=display:flex><span>	log.<span style=color:#50fa7b>Printf</span>(<span style=color:#f1fa8c>&#34;Listening on http://localhost:%d&#34;</span>, rt.config.Port)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>go</span> utils.<span style=color:#50fa7b>StartServer</span>(rt.config.Port, rt.<span style=color:#50fa7b>appRouter</span>(), <span style=color:#ff79c6>true</span>, <span style=color:#ff79c6>false</span>, rt.close, errch)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>go</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		err, ok <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&lt;-</span>errch
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> ok {
+</span></span><span style=display:flex><span>			fmt.<span style=color:#50fa7b>Println</span>(err)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>close</span>(rt.finish)
+</span></span><span style=display:flex><span>	}()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (rt <span style=color:#ff79c6>*</span>Runtime) <span style=color:#50fa7b>runExecWasm</span>() <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(rt.config.ComponentPath) &gt; <span style=color:#bd93f9>0</span> {
+</span></span><span style=display:flex><span>		comps, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>LoadComponents</span>(filepath.<span style=color:#50fa7b>Join</span>(rt.rootfs, rt.config.ComponentPath))
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		host_state.<span style=color:#50fa7b>AddComp</span>(comps<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	ins, err <span style=color:#ff79c6>:=</span> rt.runtime.<span style=color:#50fa7b>InstantiateModule</span>(context.<span style=color:#50fa7b>TODO</span>(), rt.module, rt.runtimeConfig)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	ins.<span style=color:#50fa7b>Close</span>(context.<span style=color:#50fa7b>Background</span>())
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>close</span>(rt.finish)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>以上就是核心的代码修改，其全量代码可以在<a href=https://github.com/Taction/containerd-shim-wasm>这里获得</a></p><h3 id=测试运行>测试运行</h3><h4 id=添加containerd-shim配置>添加containerd-shim配置</h4><p>拷贝<code>containerd-shim-dapr-v1</code>到<code>/usr/local/bin/</code>目录下</p><p>在/etc/containerd/config.toml中添加以下内容,并重启containerd：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-toml data-lang=toml><span style=display:flex><span>[plugins.cri.containerd.runtimes.dapr]
 </span></span><span style=display:flex><span>  runtime_type = <span style=color:#f1fa8c>&#34;io.containerd.dapr.v1&#34;</span>
-</span></span></code></pre></div><p>containerd会根据<code>runtime_type</code>自动解析对应的二进制文件名，其中<code>io.containerd.dapr.v1</code>就会被解析为<code>containerd-shim-dapr-v1</code>。</p><p>重启</p><pre tabindex=0><code>sudo systemctl restart containerd
-</code></pre><p>通过ctr运行</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>ctr run --rm --runtime<span style=color:#ff79c6>=</span>io.containerd.dapr.v1 docker.io/docker4zc/dwhttp:v0.0.3 httpwasm
+</span></span></code></pre></div><p>containerd会根据<code>runtime_type</code>自动解析对应的二进制文件名，其中<code>io.containerd.dapr.v1</code>就会被解析为<code>containerd-shim-dapr-v1</code>。</p><p>重启containerd</p><pre tabindex=0><code>sudo systemctl restart containerd
+</code></pre><p>通过ctr运行wasm镜像</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>ctr run --rm --runtime<span style=color:#ff79c6>=</span>io.containerd.dapr.v1 docker.io/docker4zc/dwhttp:v0.0.3 httpwasm
 </span></span></code></pre></div><h5 id=查看containerd-shim日志>查看containerd-shim日志</h5><p>如果要查看containerd-shim的日志，可以在 <code>/etc/containerd/config.toml</code> 中设置启用 <code>shim_debug</code> ，containerd会将shim日志转发到自己的日志。您还可以设置 <code>level = "debug"</code> 以启用调试日志。要查看日志，请运行 <code>sudo journalctl -u containerd</code> 。请注意，启用调试日志可能会生成大量的日志数据，因此在生产环境中使用时请谨慎操作，以免对系统性能产生不利影响。下面是启用这两个选项的containerd配置文件：</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-toml data-lang=toml><span style=display:flex><span>[debug]
 </span></span><span style=display:flex><span>  level = <span style=color:#f1fa8c>&#34;debug&#34;</span>
 </span></span><span style=display:flex><span>[plugins.cri.containerd.runtimes.dapr]
 </span></span><span style=display:flex><span>  shim_debug = <span style=color:#ff79c6>true</span>
 </span></span><span style=display:flex><span>  runtime_type = <span style=color:#f1fa8c>&#34;io.containerd.dapr.v1&#34;</span>
 </span></span></code></pre></div><p>查看日志</p><pre tabindex=0><code>journalctl -u containerd
-</code></pre><h3 id=调试containerd-shim>调试containerd-shim</h3><h5 id=代码修改>代码修改</h5><p>添加以下代码，并在Create函数开始时调用此函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// setupDebuggerEvent listens for an user1 signal to allow a debugger such as delve
+</code></pre><h4 id=调试containerd-shim>调试containerd-shim</h4><h5 id=代码修改>代码修改</h5><p>添加以下代码，并在Create函数开始时调用此函数。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// setupDebuggerEvent listens for an user1 signal to allow a debugger such as delve
 </span></span></span><span style=display:flex><span><span style=color:#6272a4>// to attach for advanced debugging. It&#39;s called when handling a ContainerCreate
 </span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>setupDebuggerEvent</span>() {
 </span></span><span style=display:flex><span>	logrus.<span style=color:#50fa7b>Infof</span>(<span style=color:#f1fa8c>&#34;enter setupDebuggerEvent with CONTAINERD_SHIM_WASM_V1_WAIT_DEBUGGER=%s&#34;</span>, os.<span style=color:#50fa7b>Getenv</span>(<span style=color:#f1fa8c>&#34;CONTAINERD_SHIM_WASM_V1_WAIT_DEBUGGER&#34;</span>))

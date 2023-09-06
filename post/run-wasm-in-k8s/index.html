@@ -15,7 +15,7 @@
 on
 Sunday, September 3, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
 col-md-10 col-md-offset-1
-post-container"><h4 id=先决条件>先决条件</h4><h5 id=intall-k3d>Intall k3d</h5><p><code>wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash</code></p><h5 id=kubectl>kubectl</h5><pre tabindex=0><code> curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
+post-container"><p>本文介绍一种通过containerd shim支持在k8s中运行wasm的方法</p><h4 id=先决条件>先决条件</h4><h5 id=intall-k3d>Intall k3d</h5><p><code>wget -q -O - https://raw.githubusercontent.com/k3d-io/k3d/main/install.sh | bash</code></p><h5 id=kubectl>kubectl</h5><pre tabindex=0><code> curl -LO https://storage.googleapis.com/kubernetes-release/release/$(curl -s https://storage.googleapis.com/kubernetes-release/release/stable.txt)/bin/linux/amd64/kubectl
   chmod +x ./kubectl
   sudo mv ./kubectl /usr/local/bin/kubectl
 </code></pre><h3 id=启动k3d>启动k3d</h3><p>在这个镜像中我内置添加了<code>containerd-shim-dapr-v1</code>二进制，及为containerd添加了containerd-shim的配置。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>k3d cluster create wasm-cluster --image docker.io/docker4zc/k3swithshims:latest -p <span style=color:#f1fa8c>&#34;8081:8080@loadbalancer&#34;</span> --agents <span style=color:#bd93f9>1</span>
