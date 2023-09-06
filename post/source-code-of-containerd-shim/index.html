@@ -1,0 +1,444 @@
+<!doctype html><html lang=en-us><head><meta charset=utf-8><meta http-equiv=x-ua-compatible content="IE=edge"><meta name=viewport content="width=device-width,initial-scale=1"><meta property="og:site_name" content="Taction Blog"><meta property="og:type" content="article"><meta property="og:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta property="twitter:image" content="https://taction.top/img/astronaut-moon.jpeg"><meta name=title content="通过Containerd-Shim启动container源码分析"><meta property="og:title" content="通过Containerd-Shim启动container源码分析"><meta property="twitter:title" content="通过Containerd-Shim启动container源码分析"><meta name=description content="本文从源码的角度大概分析了一下，在执行ctr run的时候，ctr、containerd、shim程序中发生了什么流程。"><meta property="og:description" content="本文从源码的角度大概分析了一下，在执行ctr run的时候，ctr、containerd、shim程序中发生了什么流程。"><meta property="twitter:description" content="本文从源码的角度大概分析了一下，在执行ctr run的时候，ctr、containerd、shim程序中发生了什么流程。"><meta property="twitter:card" content="summary"><meta name=keyword content="云原生, Dapr, Knative, WebAssembly, Kubernetes, 微服务, Microservice"><link rel="shortcut icon" href=/img/favicon.ico><title>通过Containerd-Shim启动container源码分析 | 张超的博客 | Taction Blog</title><link rel=canonical href=/post/source-code-of-containerd-shim/><link rel=stylesheet href=/css/bootstrap.min.css><link rel=stylesheet href=/css/hugo-theme-cleanwhite.min.css><link rel=stylesheet href=/css/zanshang.css><link rel=stylesheet href=/css/bg.css><link rel=stylesheet href=/css/font-awesome.all.min.css><script src=/js/jquery.min.js></script>
+<script src=/js/bootstrap.min.js></script>
+<script src=/js/hux-blog.min.js></script>
+<script src=/js/lazysizes.min.js></script></head><script async src="https://www.googletagmanager.com/gtag/js?id=G-QD2WJGC9VP"></script>
+<script>var doNotTrack=!1;if(!doNotTrack){window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments)}gtag("js",new Date),gtag("config","G-QD2WJGC9VP",{anonymize_ip:!1})}</script><nav class="navbar navbar-default navbar-custom navbar-fixed-top"><div class=container-fluid><div class="navbar-header page-scroll"><button type=button class=navbar-toggle>
+<span class=sr-only>Toggle navigation</span>
+<span class=icon-bar></span>
+<span class=icon-bar></span>
+<span class=icon-bar></span></button>
+<a class=navbar-brand href=/>Taction Blog</a></div><div id=huxblog_navbar><div class=navbar-collapse><ul class="nav navbar-nav navbar-right"><li><a href=/>All Posts</a></li><li><a href=/categories/tech/>tech</a></li><li><a href=/taction_about/>ABOUT</a></li><li><a href=/search><i class="fa fa-search"></i></a></li></ul></div></div></div></nav><script>var $body=document.body,$toggle=document.querySelector(".navbar-toggle"),$navbar=document.querySelector("#huxblog_navbar"),$collapse=document.querySelector(".navbar-collapse");$toggle.addEventListener("click",handleMagic);function handleMagic(){$navbar.className.indexOf("in")>0?($navbar.className=" ",setTimeout(function(){$navbar.className.indexOf("in")<0&&($collapse.style.height="0px")},400)):($collapse.style.height="auto",$navbar.className+=" in")}</script><style type=text/css>header.intro-header{background-image:url(/img/astronaut-moon.jpeg)}</style><header class=intro-header><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><div class=post-heading><div class=tags><a class=tag href=/tags/containerd title=containerd>containerd</a>
+<a class=tag href=/tags/shim title=shim>shim</a>
+<a class=tag href=/tags/ctr title=ctr>ctr</a>
+<a class=tag href=/tags/wasm title=wasm>wasm</a></div><h1>通过Containerd-Shim启动container源码分析</h1><h2 class=subheading></h2><span class=meta>Posted by
+    "Taction"
+on
+Tuesday, September 5, 2023</span></div></div></div></div></header><article><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+post-container"><p>本文从源码的角度大概分析了一下，在执行ctr run的时候，ctr、containerd、shim程序中发生了什么流程。</p><h3 id=背景介绍>背景介绍</h3><h5 id=简介>简介</h5><p><strong>Containerd</strong></p><p>Containerd是一个行业标准的容器运行时，它是一个daemon进程，可以管理主机上容器的全部生命周期和它的文件系统，包括：</p><ul><li>管理容器的生命周期（从创建容器到销毁容器）</li><li>拉取/推送容器镜像</li><li>存储管理（管理镜像及容器数据的存储）</li><li>调用 runc 运行容器（与 runc 等容器运行时交互）</li><li>管理容器网络接口及网络</li></ul><p><strong>Containerd-shim</strong></p><p>Containerd-shim是containerd的一个子组件，它负责在宿主机上创建和管理容器。当用户通过containerd创建一个容器时，containerd-shim会被调用来实际创建和运行容器。</p><p>Containerd-shim是一个轻量级的组件，它的设计目标是尽可能简单和可靠。它可以与不同的容器运行时（如runc）配合使用，并且可以通过插件机制进行功能扩展。我们可以通过扩展containerd来实现对wasm容器的支持。</p><p><strong>Ctr</strong></p><p>ctr是containerd的命令行工具，是containerd的一个客户端，用于与containerd交互并管理容器。它提供了一组命令，用于执行各种容器操作，如创建容器、启动容器、停止容器、删除容器等。</p><p>ctr命令行工具可以通过与containerd的API进行通信来执行这些操作。它还支持与容器相关的元数据的查询和管理，包括容器状态、容器日志、容器元数据等。ctr还提供了对容器镜像的管理功能，包括拉取、推送、删除镜像等。</p><p>container在Containerd中代表的是一个容器的元数据，containerd中的Task用于获取容器对象并将它转换成在操作系统中可运行的进程，它代表的就是容器中可运行的对象。</p><h4 id=容器启动一般流程>容器启动一般流程</h4><p>首先，使用ctr命令行工具执行<code>ctr run</code>命令来创建和启动容器。该命令指定容器的配置参数，例如容器镜像、容器名称、容器的资源限制等。ctr会与containerd进行通信，将容器的创建请求发送给containerd。</p><p>containerd收到ctr的容器创建请求后，会根据指定的容器配置来执行相应的操作。首先，containerd会检查本地是否存在指定的容器镜像。如果镜像不存在，containerd会与镜像仓库通信，拉取所需的镜像到本地。</p><p>containerd首先会启动containerd-shim程序，containerd-shim会再启动一个containerd-shim，此时先前containerd-shim退出。新的container-shim进程的父进程就变成了pid为1用户init程序。然后会向containerd-shim发送请求来实际创建和运行容器。containerd-shim负责设置容器的命名空间（Namespace）和控制组（Cgroup）等隔离机制，以及其他容器运行时所需的设置。</p><p>containerd-shim在创建容器的隔离环境后，会调用容器运行时（如runc）来启动容器进程。容器运行时根据containerd-shim提供的隔离环境配置，设置容器的文件系统、网络、进程等。在wasm场景下会配置wasm运行时并运行wasm程序。</p><p>在容器启动后，containerd-shim会监控容器进程的状态，并将相关的事件报告给containerd。containerd提供了API供用户查询和管理容器的状态、日志等信息。</p><p>接下来我们从代码角度来查看详细的流程，在这些组件中都发生了什么。</p><h3 id=代码分析>代码分析</h3><h4 id=ctr-分析>ctr 分析</h4><p>通过<code>ctr run</code>命令可以启动一个容器，让我们看下这个过程中所涉及到的源码：</p><p>简单总结下，run命令会先调用create创建一个容器，然 后调用start运行这个容器。在下面代码中我们可以看到，run命令先创建了一个containerd的client通过UDS与containerd进行通信。然后通过这个client发送NewContainer请求，然后通过task的api来start这个container。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>var</span> Command = cli.Command{
+</span></span><span style=display:flex><span>	Name:           <span style=color:#f1fa8c>&#34;run&#34;</span>,
+</span></span><span style=display:flex><span>	Usage:          <span style=color:#f1fa8c>&#34;Run a container&#34;</span>,
+</span></span><span style=display:flex><span>	ArgsUsage:      <span style=color:#f1fa8c>&#34;[flags] Image|RootFS ID [COMMAND] [ARG...]&#34;</span>,
+</span></span><span style=display:flex><span>	SkipArgReorder: <span style=color:#ff79c6>true</span>,
+</span></span><span style=display:flex><span>	Flags: <span style=color:#8be9fd;font-style:italic>append</span>([]cli.Flag{
+</span></span><span style=display:flex><span>		cli.BoolFlag{
+</span></span><span style=display:flex><span>			Name:  <span style=color:#f1fa8c>&#34;rm&#34;</span>,
+</span></span><span style=display:flex><span>			Usage: <span style=color:#f1fa8c>&#34;Remove the container after running, cannot be used with --detach&#34;</span>,
+</span></span><span style=display:flex><span>		},
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	}, <span style=color:#8be9fd;font-style:italic>append</span>(platformRunFlags,
+</span></span><span style=display:flex><span>		<span style=color:#8be9fd;font-style:italic>append</span>(<span style=color:#8be9fd;font-style:italic>append</span>(commands.SnapshotterFlags, []cli.Flag{commands.SnapshotterLabels}<span style=color:#ff79c6>...</span>),
+</span></span><span style=display:flex><span>			commands.ContainerFlags<span style=color:#ff79c6>...</span>)<span style=color:#ff79c6>...</span>)<span style=color:#ff79c6>...</span>),
+</span></span><span style=display:flex><span>	Action: <span style=color:#8be9fd;font-style:italic>func</span>(context <span style=color:#ff79c6>*</span>cli.Context) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		client, ctx, cancel, err <span style=color:#ff79c6>:=</span> commands.<span style=color:#50fa7b>NewClient</span>(context)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cancel</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		container, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>NewContainer</span>(ctx, client, context)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> rm <span style=color:#ff79c6>&amp;&amp;</span> !detach {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>defer</span> container.<span style=color:#50fa7b>Delete</span>(ctx, containerd.WithSnapshotCleanup)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		opts <span style=color:#ff79c6>:=</span> tasks.<span style=color:#50fa7b>GetNewTaskOpts</span>(context)
+</span></span><span style=display:flex><span>		ioOpts <span style=color:#ff79c6>:=</span> []cio.Opt{cio.<span style=color:#50fa7b>WithFIFODir</span>(context.<span style=color:#50fa7b>String</span>(<span style=color:#f1fa8c>&#34;fifo-dir&#34;</span>))}
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 发送 crate请求，返回一个封装的task用于发送对于这个container的task api请求
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		task, err <span style=color:#ff79c6>:=</span> tasks.<span style=color:#50fa7b>NewTask</span>(ctx, client, container, context.<span style=color:#50fa7b>String</span>(<span style=color:#f1fa8c>&#34;checkpoint&#34;</span>), con, context.<span style=color:#50fa7b>Bool</span>(<span style=color:#f1fa8c>&#34;null-io&#34;</span>), context.<span style=color:#50fa7b>String</span>(<span style=color:#f1fa8c>&#34;log-uri&#34;</span>), ioOpts, opts<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#6272a4>// 发送start请求
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> task.<span style=color:#50fa7b>Start</span>(ctx); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	},
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>NewTask是一个包装，主要是根据平台不同调用不用的<code>container.NewTask</code>方法。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// NewTask creates a new task
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>NewTask</span>(ctx gocontext.Context, client <span style=color:#ff79c6>*</span>containerd.Client, container containerd.Container, checkpoint <span style=color:#8be9fd>string</span>, con console.Console, nullIO <span style=color:#8be9fd>bool</span>, logURI <span style=color:#8be9fd>string</span>, ioOpts []cio.Opt, opts <span style=color:#ff79c6>...</span>containerd.NewTaskOpts) (containerd.Task, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>  <span style=color:#ff79c6>if</span> r.SnapshotKey <span style=color:#ff79c6>!=</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> r.Snapshotter <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;unable to resolve rootfs mounts without snapshotter on container: %w&#34;</span>, errdefs.ErrInvalidArgument)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>    <span style=color:#6272a4>// 通过containerd获取container详细定义
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		spec, err <span style=color:#ff79c6>:=</span> container.<span style=color:#50fa7b>Spec</span>(ctx)<span style=color:#6272a4>// 请求containerd unix:///run/containerd/containerd.sock
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>  }
+</span></span><span style=display:flex><span>	t, err <span style=color:#ff79c6>:=</span> container.<span style=color:#50fa7b>NewTask</span>(ctx, ioCreator, opts<span style=color:#ff79c6>...</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	stdinC.closer = <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		t.<span style=color:#50fa7b>CloseIO</span>(ctx, containerd.WithStdinCloser)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> t, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这里是unix平台的task创建函数，可以看到其主要作用就是封装了一个task结构体，它实现了Task的接口，用于向containerd发送task请求。并且在这个函数中，可以看到向containerd发送了Create请求。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (c <span style=color:#ff79c6>*</span>container) <span style=color:#50fa7b>NewTask</span>(ctx context.Context, ioCreate cio.Creator, opts <span style=color:#ff79c6>...</span>NewTaskOpts) (_ Task, err <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	
+</span></span><span style=display:flex><span>	request <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>tasks.CreateTaskRequest{
+</span></span><span style=display:flex><span>		ContainerID: c.id,
+</span></span><span style=display:flex><span>		Terminal:    cfg.Terminal,
+</span></span><span style=display:flex><span>		Stdin:       cfg.Stdin,
+</span></span><span style=display:flex><span>		Stdout:      cfg.Stdout,
+</span></span><span style=display:flex><span>		Stderr:      cfg.Stderr,
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	r, err <span style=color:#ff79c6>:=</span> c.<span style=color:#50fa7b>get</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	t <span style=color:#ff79c6>:=</span> <span style=color:#ff79c6>&amp;</span>task{
+</span></span><span style=display:flex><span>		client: c.client,
+</span></span><span style=display:flex><span>		io:     i,
+</span></span><span style=display:flex><span>		id:     c.id,
+</span></span><span style=display:flex><span>		c:      c,
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	
+</span></span><span style=display:flex><span>	response, err <span style=color:#ff79c6>:=</span> c.client.<span style=color:#50fa7b>TaskService</span>().<span style=color:#50fa7b>Create</span>(ctx, request)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errdefs.<span style=color:#50fa7b>FromGRPC</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	t.pid = response.Pid
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> t, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>ctr run的主要逻辑就是这些，起到的是一个向containerd发送请求的客户端的作用。接下来我们看下在containerd中的相关函数。</p><h4 id=containerd分析>containerd分析</h4><p>service实现了GRPC的接口，启动grpc server处理请求。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> service <span style=color:#8be9fd;font-style:italic>struct</span> {
+</span></span><span style=display:flex><span>	local api.TasksClient
+</span></span><span style=display:flex><span>	api.UnimplementedTasksServer
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>service) <span style=color:#50fa7b>Register</span>(server <span style=color:#ff79c6>*</span>grpc.Server) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	api.<span style=color:#50fa7b>RegisterTasksServer</span>(server, s)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>service) <span style=color:#50fa7b>Create</span>(ctx context.Context, r <span style=color:#ff79c6>*</span>api.CreateTaskRequest) (<span style=color:#ff79c6>*</span>api.CreateTaskResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> s.local.<span style=color:#50fa7b>Create</span>(ctx, r)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>service) <span style=color:#50fa7b>Start</span>(ctx context.Context, r <span style=color:#ff79c6>*</span>api.StartRequest) (<span style=color:#ff79c6>*</span>api.StartResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> s.local.<span style=color:#50fa7b>Start</span>(ctx, r)
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span><span style=color:#6272a4>// ...
+</span></span></span></code></pre></div><p>首先来看create流程，这里是task的creat接口，通过container id来create（到这里之前container已经创建过了）。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (l <span style=color:#ff79c6>*</span>local) <span style=color:#50fa7b>Create</span>(ctx context.Context, r <span style=color:#ff79c6>*</span>api.CreateTaskRequest, _ <span style=color:#ff79c6>...</span>grpc.CallOption) (<span style=color:#ff79c6>*</span>api.CreateTaskResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	container, err <span style=color:#ff79c6>:=</span> l.<span style=color:#50fa7b>getContainer</span>(ctx, r.ContainerID)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errdefs.<span style=color:#50fa7b>ToGRPC</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 调用TaskManager创建container，进行启动shim的流程
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	c, err <span style=color:#ff79c6>:=</span> rtime.<span style=color:#50fa7b>Create</span>(ctx, r.ContainerID, opts)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errdefs.<span style=color:#50fa7b>ToGRPC</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	labels <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>map</span>[<span style=color:#8be9fd>string</span>]<span style=color:#8be9fd>string</span>{<span style=color:#f1fa8c>&#34;runtime&#34;</span>: container.Runtime.Name}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> l.monitor.<span style=color:#50fa7b>Monitor</span>(c, labels); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;monitor task: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// pid 实际调用的是shim connect方法
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	pid, err <span style=color:#ff79c6>:=</span> c.<span style=color:#50fa7b>PID</span>(ctx)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to get task pid: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>api.CreateTaskResponse{
+</span></span><span style=display:flex><span>		ContainerID: r.ContainerID,
+</span></span><span style=display:flex><span>		Pid:         pid,
+</span></span><span style=display:flex><span>	}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span><span style=color:#6272a4>// PID of the task
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>shimTask) <span style=color:#50fa7b>PID</span>(ctx context.Context) (<span style=color:#8be9fd>uint32</span>, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	response, err <span style=color:#ff79c6>:=</span> s.task.<span style=color:#50fa7b>Connect</span>(ctx, <span style=color:#ff79c6>&amp;</span>task.ConnectRequest{
+</span></span><span style=display:flex><span>		ID: s.<span style=color:#50fa7b>ID</span>(),
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#bd93f9>0</span>, errdefs.<span style=color:#50fa7b>FromGRPC</span>(err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> response.TaskPid, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>containerd启动containerd-shim，containerd-shim会再启动一个containerd-shim，此时先前containerd-shim退出。新的container-shim进程的父进程就变成了1用户init程序。向第二个shim发送create网络请求，创建失败就发送delete干掉。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Create launches new shim instance and creates new task
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>TaskManager) <span style=color:#50fa7b>Create</span>(ctx context.Context, taskID <span style=color:#8be9fd>string</span>, opts runtime.CreateOpts) (runtime.Task, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 启动shim，在后文中详细介绍
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	shim, err <span style=color:#ff79c6>:=</span> m.manager.<span style=color:#50fa7b>Start</span>(ctx, taskID, opts)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to start shim: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Cast to shim task and call task service to create a new container task instance.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#6272a4>// This will not be required once shim service / client implemented.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	shimTask, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>newShimTask</span>(shim)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 向第二个shim发送创建请求，通过unix socket /containerd-shim/b801ea1d328d2ece1fa8eb4ed5b547e8f1cdd54e8a3692ff47416924c44d0262.sock
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	t, err <span style=color:#ff79c6>:=</span> shimTask.<span style=color:#50fa7b>Create</span>(ctx, opts)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// NOTE: ctx contains required namespace information.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		m.manager.shims.<span style=color:#50fa7b>Delete</span>(ctx, taskID)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		dctx, cancel <span style=color:#ff79c6>:=</span> timeout.<span style=color:#50fa7b>WithContext</span>(cleanup.<span style=color:#50fa7b>Background</span>(ctx), cleanupTimeout)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cancel</span>()
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		sandboxed <span style=color:#ff79c6>:=</span> opts.SandboxID <span style=color:#ff79c6>!=</span> <span style=color:#f1fa8c>&#34;&#34;</span>
+</span></span><span style=display:flex><span>		_, errShim <span style=color:#ff79c6>:=</span> shimTask.<span style=color:#8be9fd;font-style:italic>delete</span>(dctx, sandboxed, <span style=color:#8be9fd;font-style:italic>func</span>(context.Context, <span style=color:#8be9fd>string</span>) {})
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> errShim <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> errdefs.<span style=color:#50fa7b>IsDeadlineExceeded</span>(errShim) {
+</span></span><span style=display:flex><span>				dctx, cancel = timeout.<span style=color:#50fa7b>WithContext</span>(cleanup.<span style=color:#50fa7b>Background</span>(ctx), cleanupTimeout)
+</span></span><span style=display:flex><span>				<span style=color:#ff79c6>defer</span> <span style=color:#50fa7b>cancel</span>()
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>			shimTask.<span style=color:#50fa7b>Shutdown</span>(dctx)
+</span></span><span style=display:flex><span>			shimTask.<span style=color:#50fa7b>Close</span>()
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to create shim task: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> t, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>接下来看下启动shim的详细流程</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// Start launches a new shim instance
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>ShimManager) <span style=color:#50fa7b>Start</span>(ctx context.Context, id <span style=color:#8be9fd>string</span>, opts runtime.CreateOpts) (_ ShimInstance, retErr <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	bundle, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>NewBundle</span>(ctx, m.root, m.state, id, opts.Spec)
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 启动shim
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	shim, err <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>startShim</span>(ctx, bundle, id, opts)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> m.shims.<span style=color:#50fa7b>Add</span>(ctx, shim); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;failed to add task: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> shim, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>启动shim的流程，首先根据runtime类型解析shim二进制地址。然后调用binary的start方法</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (m <span style=color:#ff79c6>*</span>ShimManager) <span style=color:#50fa7b>startShim</span>(ctx context.Context, bundle <span style=color:#ff79c6>*</span>Bundle, id <span style=color:#8be9fd>string</span>, opts runtime.CreateOpts) (<span style=color:#ff79c6>*</span>shim, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>
+</span></span><span style=display:flex><span>	runtimePath, err <span style=color:#ff79c6>:=</span> m.<span style=color:#50fa7b>resolveRuntimePath</span>(opts.Runtime) <span style=color:#6272a4>// /usr/local/bin/containerd-shim-dapr-v1
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>//... error handle
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	b <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>shimBinary</span>(bundle, shimBinaryConfig{
+</span></span><span style=display:flex><span>		runtime:      runtimePath,
+</span></span><span style=display:flex><span>		address:      m.containerdAddress,<span style=color:#6272a4>// /run/containerd/containerd.sock
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		ttrpcAddress: m.containerdTTRPCAddress,<span style=color:#6272a4>// /run/containerd/containerd.sock.ttrpc
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		schedCore:    m.schedCore,
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>	shim, err <span style=color:#ff79c6>:=</span> b.<span style=color:#50fa7b>Start</span>(ctx, protobuf.<span style=color:#50fa7b>FromAny</span>(topts), <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		log.<span style=color:#50fa7b>G</span>(ctx).<span style=color:#50fa7b>WithField</span>(<span style=color:#f1fa8c>&#34;id&#34;</span>, id).<span style=color:#50fa7b>Info</span>(<span style=color:#f1fa8c>&#34;shim disconnected&#34;</span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>cleanupAfterDeadShim</span>(cleanup.<span style=color:#50fa7b>Background</span>(ctx), id, m.shims, m.events, b)
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>// Remove self from the runtime task list. Even though the cleanupAfterDeadShim()
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#6272a4>// would publish taskExit event, but the shim.Delete() would always failed with ttrpc
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#6272a4>// disconnect and there is no chance to remove this dead task from runtime task lists.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#6272a4>// Thus it&#39;s better to delete it here.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		m.shims.<span style=color:#50fa7b>Delete</span>(ctx, id)
+</span></span><span style=display:flex><span>	})
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;start failed: %w&#34;</span>, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> shim, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>binary的start会启动第一个shim（第一个shim会自动启动第二个shim），从stdout中获取到第二个shim交互方式</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (b <span style=color:#ff79c6>*</span>binary) <span style=color:#50fa7b>Start</span>(ctx context.Context, opts <span style=color:#ff79c6>*</span>types.Any, onClose <span style=color:#8be9fd;font-style:italic>func</span>()) (_ <span style=color:#ff79c6>*</span>shim, err <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	args <span style=color:#ff79c6>:=</span> []<span style=color:#8be9fd>string</span>{<span style=color:#f1fa8c>&#34;-id&#34;</span>, b.bundle.ID}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>switch</span> log.<span style=color:#50fa7b>GetLevel</span>() {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>case</span> log.DebugLevel, log.TraceLevel:
+</span></span><span style=display:flex><span>		args = <span style=color:#8be9fd;font-style:italic>append</span>(args, <span style=color:#f1fa8c>&#34;-debug&#34;</span>)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	args = <span style=color:#8be9fd;font-style:italic>append</span>(args, <span style=color:#f1fa8c>&#34;start&#34;</span>)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	cmd, err <span style=color:#ff79c6>:=</span> client.<span style=color:#50fa7b>Command</span>(
+</span></span><span style=display:flex><span>		ctx,
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>&amp;</span>client.CommandConfig{
+</span></span><span style=display:flex><span>			Runtime:      b.runtime,
+</span></span><span style=display:flex><span>			Address:      b.containerdAddress,
+</span></span><span style=display:flex><span>			TTRPCAddress: b.containerdTTRPCAddress,
+</span></span><span style=display:flex><span>			Path:         b.bundle.Path,
+</span></span><span style=display:flex><span>			Opts:         opts,
+</span></span><span style=display:flex><span>			Args:         args,
+</span></span><span style=display:flex><span>			SchedCore:    b.schedCore,
+</span></span><span style=display:flex><span>		})
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Windows needs a namespace when openShimLog
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	ns, _ <span style=color:#ff79c6>:=</span> namespaces.<span style=color:#50fa7b>Namespace</span>(ctx)
+</span></span><span style=display:flex><span>	shimCtx, cancelShimLog <span style=color:#ff79c6>:=</span> context.<span style=color:#50fa7b>WithCancel</span>(namespaces.<span style=color:#50fa7b>WithNamespace</span>(context.<span style=color:#50fa7b>Background</span>(), ns))
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// ...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>  <span style=color:#6272a4>// 通过stdout与第一个shim进行交互，拿到第二个shim的sock地址（由第一个shim生成，启动第二个shim的时候传给它，同时输出到stdout，然后退出）
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	out, err <span style=color:#ff79c6>:=</span> cmd.<span style=color:#50fa7b>CombinedOutput</span>()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, fmt.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;%s: %w&#34;</span>, out, err)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	response <span style=color:#ff79c6>:=</span> bytes.<span style=color:#50fa7b>TrimSpace</span>(out)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	onCloseWithShimLog <span style=color:#ff79c6>:=</span> <span style=color:#8be9fd;font-style:italic>func</span>() {
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>onClose</span>()
+</span></span><span style=display:flex><span>		<span style=color:#50fa7b>cancelShimLog</span>()
+</span></span><span style=display:flex><span>		f.<span style=color:#50fa7b>Close</span>()
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// Save runtime binary path for restore.
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> os.<span style=color:#50fa7b>WriteFile</span>(filepath.<span style=color:#50fa7b>Join</span>(b.bundle.Path, <span style=color:#f1fa8c>&#34;shim-binary-path&#34;</span>), []<span style=color:#8be9fd;font-style:italic>byte</span>(b.runtime), <span style=color:#bd93f9>0600</span>); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 通过第一个shim返回信息解析出来第二个shim的交互address（和protocol，支持ttrpc或者grpc）
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	params, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>parseStartResponse</span>(ctx, response)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>  <span style=color:#6272a4>// 建立连接，作为client
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	conn, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>makeConnection</span>(ctx, params, onCloseWithShimLog)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>shim{
+</span></span><span style=display:flex><span>		bundle: b.bundle,
+</span></span><span style=display:flex><span>		client: conn,
+</span></span><span style=display:flex><span>	}, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>如果是使用的ttrpc协议，会通过下面函数发送创建请求。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (c <span style=color:#ff79c6>*</span>taskClient) <span style=color:#50fa7b>Create</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>CreateTaskRequest) (<span style=color:#ff79c6>*</span>CreateTaskResponse, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> resp CreateTaskResponse
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> c.client.<span style=color:#50fa7b>Call</span>(ctx, <span style=color:#f1fa8c>&#34;containerd.task.v2.Task&#34;</span>, <span style=color:#f1fa8c>&#34;Create&#34;</span>, req, <span style=color:#ff79c6>&amp;</span>resp); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>&amp;</span>resp, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在ctr run场景中，调用create成功后，ctr会继续发送start请求。对于start的流程来说就是向上一步创建的shim发送start请求。</p><p>通过debug可以更加方便直观的查看某些代码流程，你可以通过以下过程来调试程序。</p><p><strong>构建debug二进制</strong></p><pre tabindex=0><code class=language-shel data-lang=shel>git clone https://github.com/containerd/containerd.git
+cd containerd
+GODEBUG=1 make
+</code></pre><p><strong>debug containerd命令</strong></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>dlv --listen<span style=color:#ff79c6>=</span>:40000 --headless<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>true</span> --api-version<span style=color:#ff79c6>=</span><span style=color:#bd93f9>2</span> --accept-multiclient <span style=color:#8be9fd;font-style:italic>exec</span> ./bin/containerd
+</span></span></code></pre></div><p><strong>debug ctr命令</strong></p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-shell data-lang=shell><span style=display:flex><span>dlv --listen<span style=color:#ff79c6>=</span>:40001 --headless<span style=color:#ff79c6>=</span><span style=color:#8be9fd;font-style:italic>true</span> --api-version<span style=color:#ff79c6>=</span><span style=color:#bd93f9>2</span> --accept-multiclient <span style=color:#8be9fd;font-style:italic>exec</span> ./bin/ctr -- run --rm --runtime<span style=color:#ff79c6>=</span>io.containerd.wasm.v1 docker.io/docker4zc/dwhttp:v0.0.3 httpwasm
+</span></span></code></pre></div><h4 id=shim分析>shim分析</h4><p>containerd仓库中提供了shim SDK，对于开发来说只需要实现对应的接口，传入创建函数就可以，其中<code>wasm.New</code>函数的类型为 <code>type Init func(context.Context, string, Publisher, func()) (Shim, error)</code>。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>main</span>() {
+</span></span><span style=display:flex><span>	shim.<span style=color:#50fa7b>Run</span>(<span style=color:#f1fa8c>&#34;io.containerd.wasm.v1&#34;</span>, wasm.New)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>在shim的sdk</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>run</span>(id <span style=color:#8be9fd>string</span>, initFunc Init, config Config) <span style=color:#8be9fd>error</span> {
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 调用initFunc，就是上面传入的`wasm.New`函数
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	service, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>initFunc</span>(ctx, idFlag, publisher, cancel)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>switch</span> action {
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>case</span> <span style=color:#f1fa8c>&#34;delete&#34;</span>:
+</span></span><span style=display:flex><span>		<span style=color:#6272a4>//...
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	<span style=color:#ff79c6>case</span> <span style=color:#f1fa8c>&#34;start&#34;</span>:
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 第一个启动的shim接收的action 就是 start。这里启动第二个shim。address是根据ns和id算出来的，会传递给第二个shim,第二个shim会以这个地址起一个server，同时会通过stdout发送给containerd（因为c启动的本进程，所以可以收到），这就是containerd和第二个shim交流的.sock地址。
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		address, err <span style=color:#ff79c6>:=</span> service.<span style=color:#50fa7b>StartShim</span>(ctx, idFlag, containerdBinaryFlag, addressFlag)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> _, err <span style=color:#ff79c6>:=</span> os.Stdout.<span style=color:#50fa7b>WriteString</span>(address); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>default</span>:
+</span></span><span style=display:flex><span>    <span style=color:#6272a4>// 这里是第二shim会走到的流程，action会为空
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>		<span style=color:#ff79c6>if</span> !config.NoSetupLogger {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>setLogger</span>(ctx, idFlag); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>				<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		client <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>NewShimClient</span>(ctx, service, signals)
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> client.<span style=color:#50fa7b>Serve</span>(); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> context.Canceled {
+</span></span><span style=display:flex><span>				<span style=color:#ff79c6>return</span> err
+</span></span><span style=display:flex><span>			}
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>select</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>publisher.<span style=color:#50fa7b>Done</span>():
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>case</span> <span style=color:#ff79c6>&lt;-</span>time.<span style=color:#50fa7b>After</span>(<span style=color:#bd93f9>5</span> <span style=color:#ff79c6>*</span> time.Second):
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> errors.<span style=color:#50fa7b>New</span>(<span style=color:#f1fa8c>&#34;publisher not closed&#34;</span>)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>这里有一个有意思地方是第二个containerd如何获取自身作为server的socket地址。从代码上看之前是通过<code>socket</code> flag来传递的，但是现在是通过把套接字转换成文件描述符传递给第二个shim，然后第二个shim再还原成listener实现的。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>func</span> (s <span style=color:#ff79c6>*</span>service) <span style=color:#50fa7b>StartShim</span>(ctx context.Context, id, containerdBinary, containerdAddress <span style=color:#8be9fd>string</span>) (<span style=color:#8be9fd>string</span>, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	cmd, err <span style=color:#ff79c6>:=</span> <span style=color:#50fa7b>newCommand</span>(ctx, id, containerdBinary, containerdAddress)
+</span></span><span style=display:flex><span>	address, err <span style=color:#ff79c6>:=</span> shim.<span style=color:#50fa7b>SocketAddress</span>(ctx, grouping)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#f1fa8c>&#34;&#34;</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	socket, err <span style=color:#ff79c6>:=</span> shim.<span style=color:#50fa7b>NewSocket</span>(address)
+</span></span><span style=display:flex><span>	f, err <span style=color:#ff79c6>:=</span> socket.<span style=color:#50fa7b>File</span>()
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#f1fa8c>&#34;&#34;</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>defer</span> f.<span style=color:#50fa7b>Close</span>()
+</span></span><span style=display:flex><span>	<span style=color:#6272a4>// 这里通过标准库的cmd.ExtraFiles将文件传递了下去
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span>	cmd.ExtraFiles = <span style=color:#8be9fd;font-style:italic>append</span>(cmd.ExtraFiles, f)
+</span></span><span style=display:flex><span>
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>:=</span> cmd.<span style=color:#50fa7b>Start</span>(); err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#f1fa8c>&#34;&#34;</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span></code></pre></div><p>启动shimserver的时候会通过<code> net.FileListener(os.NewFile(3, "socket"))</code>来获取listener。这里之所以是3，是因为0,1,2默认是stdin、stdout、stderr，新添加的这个就刚好是3。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#6272a4>// client.Serve()会最终调用这个函数来启动server
+</span></span></span><span style=display:flex><span><span style=color:#6272a4></span><span style=color:#8be9fd;font-style:italic>func</span> <span style=color:#50fa7b>serveListener</span>(path <span style=color:#8be9fd>string</span>) (net.Listener, <span style=color:#8be9fd>error</span>) {
+</span></span><span style=display:flex><span>	<span style=color:#8be9fd;font-style:italic>var</span> (
+</span></span><span style=display:flex><span>		l   net.Listener
+</span></span><span style=display:flex><span>		err <span style=color:#8be9fd>error</span>
+</span></span><span style=display:flex><span>	)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> path <span style=color:#ff79c6>==</span> <span style=color:#f1fa8c>&#34;&#34;</span> {
+</span></span><span style=display:flex><span>		l, err = net.<span style=color:#50fa7b>FileListener</span>(os.<span style=color:#50fa7b>NewFile</span>(<span style=color:#bd93f9>3</span>, <span style=color:#f1fa8c>&#34;socket&#34;</span>))
+</span></span><span style=display:flex><span>		path = <span style=color:#f1fa8c>&#34;[inherited from parent]&#34;</span>
+</span></span><span style=display:flex><span>	} <span style=color:#ff79c6>else</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>if</span> <span style=color:#8be9fd;font-style:italic>len</span>(path) &gt; <span style=color:#bd93f9>106</span> {
+</span></span><span style=display:flex><span>			<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, errors.<span style=color:#50fa7b>Errorf</span>(<span style=color:#f1fa8c>&#34;%q: unix socket path too long (&gt; 106)&#34;</span>, path)
+</span></span><span style=display:flex><span>		}
+</span></span><span style=display:flex><span>		l, err = net.<span style=color:#50fa7b>Listen</span>(<span style=color:#f1fa8c>&#34;unix&#34;</span>, <span style=color:#f1fa8c>&#34;\x00&#34;</span><span style=color:#ff79c6>+</span>path)
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>if</span> err <span style=color:#ff79c6>!=</span> <span style=color:#ff79c6>nil</span> {
+</span></span><span style=display:flex><span>		<span style=color:#ff79c6>return</span> <span style=color:#ff79c6>nil</span>, err
+</span></span><span style=display:flex><span>	}
+</span></span><span style=display:flex><span>	logrus.<span style=color:#50fa7b>WithField</span>(<span style=color:#f1fa8c>&#34;socket&#34;</span>, path).<span style=color:#50fa7b>Debug</span>(<span style=color:#f1fa8c>&#34;serving api on abstract socket&#34;</span>)
+</span></span><span style=display:flex><span>	<span style=color:#ff79c6>return</span> l, <span style=color:#ff79c6>nil</span>
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>shim在启动server之后，containerd就可以通过ttrpc（或者grpc）协议与shim进行交互。shim提供TaskService interface来对容器进行管理，这也是我们自己实现的shim需要实现的功能接口。</p><div class=highlight><pre tabindex=0 style=color:#f8f8f2;background-color:#282a36;-moz-tab-size:4;-o-tab-size:4;tab-size:4><code class=language-go data-lang=go><span style=display:flex><span><span style=color:#8be9fd;font-style:italic>type</span> TaskService <span style=color:#8be9fd;font-style:italic>interface</span> {
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>State</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>StateRequest) (<span style=color:#ff79c6>*</span>StateResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Create</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>CreateTaskRequest) (<span style=color:#ff79c6>*</span>CreateTaskResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Start</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>StartRequest) (<span style=color:#ff79c6>*</span>StartResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Delete</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>DeleteRequest) (<span style=color:#ff79c6>*</span>DeleteResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Pids</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>PidsRequest) (<span style=color:#ff79c6>*</span>PidsResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Pause</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>PauseRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Resume</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>ResumeRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Checkpoint</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>CheckpointTaskRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Kill</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>KillRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Exec</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>ExecProcessRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>ResizePty</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>ResizePtyRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>CloseIO</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>CloseIORequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Update</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>UpdateTaskRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Wait</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>WaitRequest) (<span style=color:#ff79c6>*</span>WaitResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Stats</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>StatsRequest) (<span style=color:#ff79c6>*</span>StatsResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Connect</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>ConnectRequest) (<span style=color:#ff79c6>*</span>ConnectResponse, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>	<span style=color:#50fa7b>Shutdown</span>(ctx context.Context, req <span style=color:#ff79c6>*</span>ShutdownRequest) (<span style=color:#ff79c6>*</span>types1.Empty, <span style=color:#8be9fd>error</span>)
+</span></span><span style=display:flex><span>}
+</span></span></code></pre></div><p>参考</p><p><a href=https://www.51cto.com/article/744467.html>https://www.51cto.com/article/744467.html</a></p><p><a href=https://juejin.cn/post/7223593286698074167>https://juejin.cn/post/7223593286698074167</a></p><p><a href=https://www.alibabacloud.com/blog/getting-started-with-kubernetes-%7C-understanding-kubernetes-runtimeclass-and-using-multiple-container-runtimes_596341>https://www.alibabacloud.com/blog/getting-started-with-kubernetes-%7C-understanding-kubernetes-runtimeclass-and-using-multiple-container-runtimes_596341</a></p><p><a href=https://www.qikqiak.com/post/containerd-usage/>https://www.qikqiak.com/post/containerd-usage/</a></p><p><a href=https://cloud.tencent.com/developer/article/2154031>https://cloud.tencent.com/developer/article/2154031</a></p><p><a href=https://www.jianshu.com/p/d8f6c40280f8>https://www.jianshu.com/p/d8f6c40280f8</a></p><p><a href=https://jiajunhuang.com/articles/2017_10_25-golang_graceful_restart.md.html>https://jiajunhuang.com/articles/2017_10_25-golang_graceful_restart.md.html</a></p><hr><ul class=pager><li class=previous><a href=/post/run-dapr-wasm-in-k8s/ data-toggle=tooltip data-placement=top title="在K8s中调度Dapr Wasm程序">&larr;
+Previous Post</a></li></ul></div><div class="col-lg-2 col-lg-offset-0
+visible-lg-block
+sidebar-container
+catalog-container"><div class=side-catalog><hr class="hidden-sm hidden-xs"><h5><a class=catalog-toggle href=#>CATALOG</a></h5><ul class=catalog-body></ul></div></div><div class="col-lg-8 col-lg-offset-2
+col-md-10 col-md-offset-1
+sidebar-container"><section><hr class="hidden-sm hidden-xs"><h5><a href=/tags/>FEATURED TAGS</a></h5><div class=tags><a href=/tags/containerd title=containerd>containerd</a>
+<a href=/tags/dapr title=dapr>dapr</a>
+<a href=/tags/k8s title=k8s>k8s</a>
+<a href=/tags/knative title=knative>knative</a>
+<a href=/tags/shim title=shim>shim</a>
+<a href=/tags/spin title=spin>spin</a>
+<a href=/tags/wasmcloud title=wasmcloud>wasmcloud</a>
+<a href=/tags/webassembly title=webassembly>webassembly</a>
+<a href=/tags/wit title=wit>wit</a></div></section></div></div></div></article><footer><div class=container><div class=row><div class="col-lg-8 col-lg-offset-2 col-md-10 col-md-offset-1"><ul class="list-inline text-center"><li><a href=mailto:zchao9100@gmail.com><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-envelope fa-stack-1x fa-inverse"></i></span></a></li><li><a target=_blank href=https://github.com/taction><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fab fa-github fa-stack-1x fa-inverse"></i></span></a></li><li><a href rel=alternate type=application/rss+xml title="Taction Blog"><span class="fa-stack fa-lg"><i class="fas fa-circle fa-stack-2x"></i>
+<i class="fas fa-rss fa-stack-1x fa-inverse"></i></span></a></li></ul><p class="copyright text-muted">Copyright &copy; Taction Blog 2023<br><a href=https://themes.gohugo.io/hugo-theme-cleanwhite>CleanWhite Hugo Theme</a> by <a href=https://zhaohuabing.com>Huabing</a> |
+<iframe style=margin-left:2px;margin-bottom:-5px frameborder=0 scrolling=0 width=100px height=20px src="https://ghbtns.com/github-btn.html?user=zhaohuabing&repo=hugo-theme-cleanwhite&type=star&count=true"></iframe></p></div></div></div></footer><script>function loadAsync(e,t){var s=document,o="script",n=s.createElement(o),i=s.getElementsByTagName(o)[0];n.src=e,t&&n.addEventListener("load",function(e){t(null,e)},!1),i.parentNode.insertBefore(n,i)}</script><script>$("#tag_cloud").length!==0&&loadAsync("/js/jquery.tagcloud.js",function(){$.fn.tagcloud.defaults={color:{start:"#bbbbee",end:"#0085a1"}},$("#tag_cloud a").tagcloud()})</script><script>loadAsync("https://cdn.jsdelivr.net/npm/fastclick@1.0.6/lib/fastclick.min.js",function(){var e=document.querySelector("nav");e&&FastClick.attach(e)})</script><script type=text/javascript>function generateCatalog(e){_containerSelector="div.post-container";var t,n,s,o,i,a=$(_containerSelector),r=a.find("h1,h2,h3,h4,h5,h6");return $(e).html(""),r.each(function(){t=$(this).prop("tagName").toLowerCase(),o="#"+$(this).prop("id"),n=$(this).text(),i=$('<a href="'+o+'" rel="nofollow">'+n+"</a>"),s=$('<li class="'+t+'_nav"></li>').append(i),$(e).append(s)}),!0}generateCatalog(".catalog-body"),$(".catalog-toggle").click(function(e){e.preventDefault(),$(".side-catalog").toggleClass("fold")}),loadAsync("/js/jquery.nav.js",function(){$(".catalog-body").onePageNav({currentClass:"active",changeHash:!1,easing:"swing",filter:"",scrollSpeed:700,scrollOffset:0,scrollThreshold:.2,begin:null,end:null,scrollChange:null,padding:80})})</script></body></html>
